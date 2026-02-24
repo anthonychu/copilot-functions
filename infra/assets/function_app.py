@@ -32,7 +32,10 @@ _MCP_AGENT_TOOL_PROPERTIES = json.dumps(
 
 def _load_agents_frontmatter_metadata() -> Dict[str, Any]:
     """Load AGENTS.md frontmatter metadata as a dictionary."""
-    agents_md_path = Path(os.getcwd()) / "AGENTS.md"
+    # Use __file__ to locate AGENTS.md relative to function_app.py instead of
+    # os.getcwd(), because Flex Consumption cold start uses a standby path
+    # (/tmp/functions/standby/wwwroot/) as cwd during module import.
+    agents_md_path = Path(__file__).resolve().parent / "AGENTS.md"
     if not agents_md_path.exists():
         return {}
 
