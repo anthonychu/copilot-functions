@@ -1,5 +1,7 @@
 # Git
-.git*
+.git/
+.gitignore
+.gitattributes
 
 # IDE
 .idea/

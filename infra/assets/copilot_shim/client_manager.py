@@ -3,7 +3,7 @@ import logging
 import os
 from typing import Optional
 
-from copilot import CopilotClient
+from copilot import CopilotClient, SubprocessConfig
 
 from .cli_path import get_copilot_cli_path
 
@@ -42,18 +42,15 @@ class CopilotClientManager:
                 if _is_byok_mode():
                     logging.info("BYOK mode: using Microsoft Foundry (no GitHub token)")
                     manager._client = CopilotClient(
-                        {
-                            "cli_path": cli_path,
-                        }  # type: ignore
+                        SubprocessConfig(cli_path=cli_path)
                     )
                 else:
                     github_token = os.environ.get("GITHUB_TOKEN")
-                    print("got github token:", github_token is not None)
                     manager._client = CopilotClient(
-                        {
-                            "cli_path": cli_path,
-                            "github_token": github_token,
-                        }  # type: ignore
+                        SubprocessConfig(
+                            cli_path=cli_path,
+                            github_token=github_token,
+                        )
                     )
 
                 await manager._client.start()

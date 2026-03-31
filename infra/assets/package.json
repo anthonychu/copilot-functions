@@ -9,9 +9,9 @@
     "prepack": "npm run install:linux"
   },
   "dependencies": {
-    "@github/copilot": "0.0.411"
+    "@github/copilot": "1.0.13"
   },
   "optionalDependencies": {
-    "@github/copilot-darwin-arm64": "0.0.411"
+    "@github/copilot-darwin-arm64": "1.0.13"
   }
 }

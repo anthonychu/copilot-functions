@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from copilot import ResumeSessionConfig, SessionConfig
+from copilot import ProviderConfig, PermissionHandler
 import frontmatter
 
 from .client_manager import CopilotClientManager, _is_byok_mode
@@ -14,7 +14,7 @@ from .mcp import get_cached_mcp_servers
 from .skills import resolve_session_directory_for_skills
 from .tools import _REGISTERED_TOOLS_CACHE
 
-DEFAULT_TIMEOUT = 120.0
+DEFAULT_TIMEOUT = 300.0
 
 
 @dataclass
@@ -59,17 +59,21 @@ _AGENTS_MD_CONTENT_CACHE = _load_agents_md_content()
 DEFAULT_MODEL = os.environ.get("COPILOT_MODEL", "claude-sonnet-4")
 
 
-def _build_session_config(
+_default_permission_handler = PermissionHandler.approve_all
+
+
+def _build_session_kwargs(
     model: str = DEFAULT_MODEL,
     config_dir: Optional[str] = None,
     session_id: Optional[str] = None,
     streaming: bool = False,
-) -> SessionConfig:
-    session_config: SessionConfig = {
+) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {
         "model": model,
         "streaming": streaming,
-        "tools": _REGISTERED_TOOLS_CACHE,  # type: ignore
+        "tools": _REGISTERED_TOOLS_CACHE,
         "system_message": {"mode": "replace", "content": _AGENTS_MD_CONTENT_CACHE},
+        "on_permission_request": _default_permission_handler,
     }
 
     # If Microsoft Foundry BYOK is configured, add provider config
@@ -79,53 +83,68 @@ def _build_session_config(
         foundry_model = os.environ.get("AZURE_AI_FOUNDRY_MODEL", model)
         # GPT-5 series models use the responses API format
         wire_api = "responses" if foundry_model.startswith("gpt-5") else "completions"
-        session_config["model"] = foundry_model  # type: ignore
-        session_config["provider"] = {  # type: ignore
-            "type": "openai",
-            "base_url": foundry_endpoint,
-            "api_key": foundry_key,
-            "wire_api": wire_api,
-        }
+        kwargs["model"] = foundry_model
+        kwargs["provider"] = ProviderConfig(
+            type="openai",
+            base_url=foundry_endpoint,
+            api_key=foundry_key,
+            wire_api=wire_api,
+        )
         logging.info(f"BYOK mode: using Microsoft Foundry endpoint={foundry_endpoint}, model={foundry_model}, wire_api={wire_api}")
 
     if session_id:
-        session_config["session_id"] = session_id
+        kwargs["session_id"] = session_id
 
     if config_dir:
-        session_config["config_dir"] = config_dir
+        kwargs["config_dir"] = config_dir
 
     session_directory = resolve_session_directory_for_skills()
     if session_directory:
-        session_config["config"] = {"sessionDirectory": session_directory}  # type: ignore
-        logging.info(f"Using sessionDirectory for skills discovery: {session_directory}")
+        kwargs["skill_directories"] = [session_directory]
+        logging.info(f"Using skill_directories for skills discovery: {session_directory}")
 
     mcp_servers = get_cached_mcp_servers()
     if mcp_servers:
-        session_config["mcp_servers"] = mcp_servers
+        kwargs["mcp_servers"] = mcp_servers
 
-    return session_config
+    return kwargs
 
 
-def _build_resume_config(
+def _build_resume_kwargs(
     model: str = DEFAULT_MODEL,
     config_dir: Optional[str] = None,
     streaming: bool = False,
-) -> ResumeSessionConfig:
-    resume_config: ResumeSessionConfig = {
+) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {
         "model": model,
         "streaming": streaming,
-        "tools": _REGISTERED_TOOLS_CACHE,  # type: ignore
+        "tools": _REGISTERED_TOOLS_CACHE,
         "system_message": {"mode": "replace", "content": _AGENTS_MD_CONTENT_CACHE},
+        "on_permission_request": _default_permission_handler,
     }
 
+    # If Microsoft Foundry BYOK is configured, add provider config
+    if _is_byok_mode():
+        foundry_endpoint = os.environ["AZURE_AI_FOUNDRY_ENDPOINT"]
+        foundry_key = os.environ["AZURE_AI_FOUNDRY_API_KEY"]
+        foundry_model = os.environ.get("AZURE_AI_FOUNDRY_MODEL", model)
+        wire_api = "responses" if foundry_model.startswith("gpt-5") else "completions"
+        kwargs["model"] = foundry_model
+        kwargs["provider"] = ProviderConfig(
+            type="openai",
+            base_url=foundry_endpoint,
+            api_key=foundry_key,
+            wire_api=wire_api,
+        )
+
     if config_dir:
-        resume_config["config_dir"] = config_dir
+        kwargs["config_dir"] = config_dir
 
     mcp_servers = get_cached_mcp_servers()
     if mcp_servers:
-        resume_config["mcp_servers"] = mcp_servers
+        kwargs["mcp_servers"] = mcp_servers
 
-    return resume_config
+    return kwargs
 
 
 async def run_copilot_agent(
@@ -141,15 +160,15 @@ async def run_copilot_agent(
     # Resume existing session or create a new one
     if session_id and session_exists(config_dir, session_id):
         logging.info(f"Resuming existing session: {session_id}")
-        resume_config = _build_resume_config(model=model, config_dir=config_dir)
-        session = await client.resume_session(session_id, resume_config)
+        resume_kwargs = _build_resume_kwargs(model=model, config_dir=config_dir)
+        session = await client.resume_session(session_id, **resume_kwargs)
     else:
         if session_id:
             logging.info(f"Creating new session with provided ID: {session_id}")
-        session_config = _build_session_config(
+        session_kwargs = _build_session_kwargs(
             model=model, config_dir=config_dir, session_id=session_id, streaming=streaming
         )
-        session = await client.create_session(session_config)
+        session = await client.create_session(**session_kwargs)
 
     response_content: List[str] = []
     tool_calls: List[Dict[str, Any]] = []
@@ -198,7 +217,7 @@ async def run_copilot_agent(
         )
 
     else:
-        await session.send_and_wait({"prompt": prompt}, timeout=timeout)
+        await session.send_and_wait(prompt, timeout=timeout)
 
         return AgentResult(
             session_id=session.session_id,
@@ -226,34 +245,23 @@ async def run_copilot_agent_stream(
     config_dir = resolve_config_dir()
     client = await CopilotClientManager.get_client()
 
-    if session_id and session_exists(config_dir, session_id):
-        logging.info(f"[stream] Resuming existing session: {session_id}")
-        resume_config = _build_resume_config(model=model, config_dir=config_dir, streaming=True)
-        session = await client.resume_session(session_id, resume_config)
-    else:
-        if session_id:
-            logging.info(f"[stream] Creating new session with provided ID: {session_id}")
-        session_config = _build_session_config(
-            model=model, config_dir=config_dir, session_id=session_id, streaming=True
-        )
-        session = await client.create_session(session_config)
-
     queue: asyncio.Queue = asyncio.Queue()
-    accept_events = False
     seen_event_ids: set[str] = set()
+    has_received_turn_start = False
+    has_active_tools = False
 
     def on_event(event):
-        nonlocal accept_events
+        nonlocal has_received_turn_start, has_active_tools
         event_type = event.type.value if hasattr(event.type, "value") else str(event.type)
         event_id = str(event.id) if hasattr(event, "id") and event.id else None
-
-        if not accept_events:
-            return
 
         if event_id:
             if event_id in seen_event_ids:
                 return
             seen_event_ids.add(event_id)
+
+        if event_type == "assistant.turn_start":
+            has_received_turn_start = True
 
         if event_type == "assistant.message_delta":
             delta = getattr(event.data, "delta_content", None)
@@ -265,8 +273,10 @@ async def run_copilot_agent_stream(
                 queue.put_nowait({"type": "intermediate", "content": reasoning_delta})
         elif event_type == "assistant.message":
             message_content = getattr(event.data, "content", "")
-            queue.put_nowait({"type": "message", "content": message_content})
+            if message_content:
+                queue.put_nowait({"type": "message", "content": message_content})
         elif event_type == "tool.execution_start":
+            has_active_tools = True
             queue.put_nowait({
                 "type": "tool_start",
                 "event_id": str(event.id) if hasattr(event, "id") and event.id else None,
@@ -287,16 +297,30 @@ async def run_copilot_agent_stream(
                 "result": getattr(event.data, "result", None),
             })
         elif event_type == "session.idle":
-            queue.put_nowait(_STREAM_SENTINEL)
+            if has_received_turn_start:
+                queue.put_nowait(_STREAM_SENTINEL)
+        elif event_type == "session.error":
+            error_msg = getattr(event.data, "message", "Unknown error")
+            logging.error(f"[stream] Session error: {error_msg}")
+            queue.put_nowait({"type": "error", "content": error_msg})
 
-    session.on(on_event)
+    if session_id and session_exists(config_dir, session_id):
+        logging.info(f"[stream] Resuming existing session: {session_id}")
+        resume_kwargs = _build_resume_kwargs(model=model, config_dir=config_dir, streaming=True)
+        session = await client.resume_session(session_id, **resume_kwargs, on_event=on_event)
+    else:
+        if session_id:
+            logging.info(f"[stream] Creating new session with provided ID: {session_id}")
+        session_kwargs = _build_session_kwargs(
+            model=model, config_dir=config_dir, session_id=session_id, streaming=True
+        )
+        session = await client.create_session(**session_kwargs, on_event=on_event)
 
     # Yield the session ID first so the client knows it immediately
     yield f"data: {json.dumps({'type': 'session', 'session_id': session.session_id})}\n\n"
 
-    # Fire-and-forget: send the prompt, events arrive via on_event callback
-    accept_events = True
-    await session.send({"prompt": prompt})
+    # Send the prompt, events arrive via on_event callback
+    await session.send(prompt)
 
     # Drain the queue until session.idle sentinel arrives or timeout
     try:
