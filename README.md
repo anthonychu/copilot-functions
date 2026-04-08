@@ -182,49 +182,34 @@ Agent instructions in markdown...
 
 String values in `trigger.*` (except `type`), `tools_from_connections[].connection_id`, and `execution_sandbox.session_pool_management_endpoint` support `$VAR` or `%VAR%` syntax (full-string match only).
 
-## API Reference
+## What `main.agent.md` Enables
 
-### `create_function_app(app_root=None)`
+When a `main.agent.md` file exists in your app root, the runtime automatically registers:
 
-Build and return a fully-configured `FunctionApp`. Discovers agent files, registers triggers, HTTP routes, and MCP endpoints.
+### Chat UI
 
-- **`app_root`** (`Path | None`) — root directory containing `main.agent.md`, `tools/`, `skills/`, etc. Defaults to `COPILOT_APP_ROOT` env var, then `AzureWebJobsScriptRoot` (auto-set by Azure Functions host), then `os.getcwd()`.
+A built-in single-page chat interface served at the app root (`/`). No frontend code needed — just open `http://localhost:7071/` locally or `https://<your-app>.azurewebsites.net/` when deployed.
 
-### `set_app_root(path)`
+On first load, you'll be prompted for the base URL and a function key (for deployed apps). These are stored in browser local storage and can be changed via the gear icon.
 
-Explicitly set the application root directory. Called automatically by `create_function_app()` when `app_root` is provided.
+### HTTP Chat API
 
-### `run_copilot_agent(prompt, system_message, ...)`
+Two POST endpoints for programmatic access:
 
-Run a non-streaming agent invocation. Returns an `AgentResult`.
+- **`POST /agent/chat`** — JSON request/response. Returns `session_id`, `response`, and `tool_calls`.
+- **`POST /agent/chatstream`** — streaming Server-Sent Events (SSE). Returns incremental text chunks, tool execution events, and a final message.
 
-### `run_copilot_agent_stream(prompt, system_message, ...)`
+Pass `x-ms-session-id` header to continue a conversation across requests. If omitted, a new session is created automatically.
 
-Run a streaming agent invocation. Returns an async generator.
+### MCP Server
 
-### `AgentResult`
+An MCP-compatible endpoint at `/runtime/webhooks/mcp` that any MCP client (VS Code, Claude Desktop, etc.) can connect to. Requires the MCP extension system key in the `x-functions-key` header when deployed.
 
-Dataclass with `session_id`, `content`, `tool_calls`, etc.
+> **Storage required:** The MCP server and non-HTTP triggers require Azure Storage. Locally, run [Azurite](#5-start-azurite-local-storage-emulator). If you only need the HTTP chat endpoints, you can skip storage by setting `AzureWebJobsStorage` to `""`.
 
-### `configure_connector_tools(specs)`
+### Without `main.agent.md`
 
-Pre-register connector tool specs for lazy loading.
-
-### `get_connector_tools()`
-
-Async — load and return connector tools from pre-registered specs.
-
-### `create_sandbox_tools(config)`
-
-Create an `execute_python` tool from an ACA session pool config.
-
-### `resolve_config_dir()`
-
-Resolve the session state directory path.
-
-### `session_exists(config_dir, session_id)`
-
-Check if a session exists on disk.
+If there's no `main.agent.md`, the HTTP chat, MCP, and UI endpoints are all disabled. The app only runs triggered agents (timer, queue, Teams, etc.).
 
 ## Samples
 
