@@ -125,7 +125,7 @@ Your agent is now running at `http://localhost:7071/` with a built-in chat UI, H
 ## Features
 
 - **Markdown-first** — agent instructions, trigger config, and tool bindings in `.agent.md` files
-- **Multi-agent** — a main agent for HTTP/MCP + any number of event-triggered agents (timer, queue, Teams, blob, etc.)
+- **Multi-function** — each `.agent.md` file becomes an Azure Function. `main.agent.md` creates HTTP/MCP endpoints; other files create event-triggered functions (timer, queue, Teams, blob, etc.)
 - **HTTP APIs** — `POST /agent/chat` and `POST /agent/chatstream`
 - **MCP server** — `/runtime/webhooks/mcp`
 - **Chat UI** — built-in single-page UI at the app root
@@ -165,10 +165,10 @@ logger: true               # optional, default true
 Agent instructions in markdown...
 ```
 
-### Multi-agent architecture
+### Multiple functions from markdown
 
-- **`main.agent.md`** — HTTP chat, MCP, and UI endpoints. No trigger.
-- **`<name>.agent.md`** — event-triggered agent. Exactly one trigger per file. The filename becomes the Azure Functions function name.
+- **`main.agent.md`** — creates HTTP chat, MCP, and UI endpoints. No trigger.
+- **`<name>.agent.md`** — creates an event-triggered Azure Function. Exactly one trigger per file. The filename (minus `.agent.md`) becomes the function name.
 
 ### Trigger type resolution
 
@@ -209,7 +209,29 @@ An MCP-compatible endpoint at `/runtime/webhooks/mcp` that any MCP client (VS Co
 
 ### Without `main.agent.md`
 
-If there's no `main.agent.md`, the HTTP chat, MCP, and UI endpoints are all disabled. The app only runs triggered agents (timer, queue, Teams, etc.).
+If there's no `main.agent.md`, the HTTP chat, MCP, and UI endpoints are all disabled. The app only runs triggered functions.
+
+## MCP Server Configuration
+
+You can give your agent access to external MCP servers by creating an `mcp.json` file (or `.vscode/mcp.json`) in the app root. Only **HTTP remote servers** are supported.
+
+```json
+{
+  "servers": {
+    "microsoft-learn": {
+      "type": "http",
+      "url": "https://learn.microsoft.com/api/mcp"
+    }
+  }
+}
+```
+
+Tools from configured MCP servers are automatically available to the agent at runtime. Each server entry supports:
+
+- **`type`** — `"http"` (required)
+- **`url`** — the MCP server endpoint URL
+- **`headers`** — optional HTTP headers (e.g. for authentication)
+- **`tools`** — optional array of tool name patterns to allow (default: `["*"]`)
 
 ## Samples
 
