@@ -4,7 +4,7 @@
 
 A markdown-first programming model for building AI agents on Azure Functions with the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
 
-Define your agent's behavior in a `.agent.md` file, add skills as knowledge modules, connect to external services via triggers and connectors, and give your agent custom tools in plain Python. The runtime handles LLM orchestration, tool invocation, session management, and scaling.
+Define your agent's behavior in a `.agent.md` file, add skills as knowledge modules, connect to external services via triggers and connectors, give your agent custom tools in plain Python, and extend it with external MCP servers. The runtime handles LLM orchestration, tool invocation, session management, and scaling.
 
 ## Installation
 
@@ -14,12 +14,6 @@ Install directly from the release URL:
 
 ```bash
 pip install https://github.com/anthonychu/copilot-functions/releases/download/v0.1.0/copilot_functions-0.1.0-py3-none-any.whl
-```
-
-Or download the `.whl` from the [Releases](https://github.com/anthonychu/copilot-functions/releases) page and install locally:
-
-```bash
-pip install copilot_functions-0.1.0-py3-none-any.whl
 ```
 
 ### From the GitHub repo
@@ -33,9 +27,6 @@ pip install copilot-functions @ git+https://github.com/anthonychu/copilot-functi
 Connector tools (Teams, Office 365, SQL, Salesforce, etc.) require an optional extra:
 
 ```bash
-# From .whl
-pip install "copilot_functions-0.1.0-py3-none-any.whl[connectors]"
-
 # From release URL
 pip install "copilot-functions[connectors] @ https://github.com/anthonychu/copilot-functions/releases/download/v0.1.0/copilot_functions-0.1.0-py3-none-any.whl"
 
@@ -154,7 +145,7 @@ tools_from_connections:
 execution_sandbox:
   session_pool_management_endpoint: $ACA_SESSION_POOL_ENDPOINT
 
-# For triggered agents only:
+# For triggered agents only (not `main.agent.md`):
 trigger:
   type: timer_trigger      # or queue_trigger, teams.new_channel_message_trigger, etc.
   schedule: "0 0 9 * * *"  # trigger-specific params passed as kwargs
@@ -169,6 +160,19 @@ Agent instructions in markdown...
 
 - **`main.agent.md`** — creates HTTP chat, MCP, and UI endpoints. No other triggers are supported in this file.
 - **`<name>.agent.md`** — creates an event-triggered Azure Function. Exactly one trigger per file. The filename (minus `.agent.md`) becomes the function name.
+
+When a triggered function runs, the agent's markdown body is used as the system instructions. The prompt sent to the agent includes the trigger type and the serialized binding data:
+
+```
+Triggered by: service_bus_queue_trigger
+
+Trigger data:
+```json
+{"body": "...", "message_id": "...", ...}
+```​
+```
+
+This applies to all trigger types, including timers (whose data includes fields like `past_due`).
 
 ### Trigger type resolution
 

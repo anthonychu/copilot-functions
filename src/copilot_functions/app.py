@@ -220,13 +220,13 @@ def _register_builtin_agent(
         logging.warning(f"Skipping '{function_name}': unknown trigger type '{trigger_type}'")
         return
 
-    # Timer triggers: normalize schedule, use agent body as prompt
+    # Timer triggers: normalize schedule
     if trigger_type == "timer_trigger":
         if "schedule" in trigger_params:
             trigger_params["schedule"] = _normalize_timer_schedule(str(trigger_params["schedule"]))
 
     # Create handler
-    handler = _make_agent_handler(function_name, agent_name, prompt, should_log, sandbox_tools=sandbox_tools)
+    handler = _make_agent_handler(function_name, agent_name, trigger_type, should_log, sandbox_tools=sandbox_tools)
 
     # Register with auto-generated arg_name
     trigger_params["arg_name"] = "trigger_data"
@@ -276,7 +276,7 @@ def _register_connector_agent(
         logging.warning(f"Skipping '{function_name}': could not resolve connector trigger '{trigger_type}'")
         return connectors_instance
 
-    handler = _make_agent_handler(function_name, agent_name, prompt, should_log, sandbox_tools=sandbox_tools)
+    handler = _make_agent_handler(function_name, agent_name, trigger_type, should_log, sandbox_tools=sandbox_tools)
 
     try:
         decorator_fn(**trigger_params)(handler)
@@ -287,10 +287,30 @@ def _register_connector_agent(
     return connectors_instance
 
 
+def _serialize_trigger_data(trigger_data) -> str:
+    """Serialize trigger binding data to a JSON string."""
+    if trigger_data is None:
+        return "{}"
+    if hasattr(trigger_data, "to_dict"):
+        payload = trigger_data.to_dict()
+    elif hasattr(trigger_data, "model_dump"):
+        payload = trigger_data.model_dump()
+    elif isinstance(trigger_data, dict):
+        payload = trigger_data
+    elif isinstance(trigger_data, str):
+        return trigger_data
+    else:
+        payload = str(trigger_data)
+
+    if isinstance(payload, dict):
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    return str(payload)
+
+
 def _make_agent_handler(
     function_name: str,
     agent_name: str,
-    default_prompt: str,
+    trigger_type: str,
     should_log: bool,
     sandbox_tools: Optional[list] = None,
 ):
@@ -299,30 +319,8 @@ def _make_agent_handler(
         logging.info(f"Agent '{function_name}' triggered")
 
         try:
-            # Timer triggers: use agent body as prompt (no meaningful incoming data)
-            if hasattr(trigger_data, "past_due"):
-                if trigger_data.past_due:
-                    logging.info(f"Agent '{function_name}' is past due.")
-                prompt = default_prompt
-            elif trigger_data is not None:
-                # Serialize incoming data as prompt
-                if hasattr(trigger_data, "to_dict"):
-                    payload = trigger_data.to_dict()
-                elif hasattr(trigger_data, "model_dump"):
-                    payload = trigger_data.model_dump()
-                elif isinstance(trigger_data, dict):
-                    payload = trigger_data
-                elif isinstance(trigger_data, str):
-                    payload = trigger_data
-                else:
-                    payload = str(trigger_data)
-
-                if isinstance(payload, dict):
-                    prompt = json.dumps(payload, ensure_ascii=False, default=str)
-                else:
-                    prompt = str(payload)
-            else:
-                prompt = default_prompt
+            data_json = _serialize_trigger_data(trigger_data)
+            prompt = f"Triggered by: {trigger_type}\n\nTrigger data:\n```json\n{data_json}\n```"
 
             result = await run_copilot_agent(prompt, sandbox_tools=sandbox_tools)
 
