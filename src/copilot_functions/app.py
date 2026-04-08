@@ -2,14 +2,19 @@
 Azure Functions + GitHub Copilot SDK — app factory.
 
 Call ``create_function_app()`` to build a fully-configured FunctionApp
-with HTTP routes, MCP tool, and dynamic triggers from AGENTS.md.
+with HTTP routes, MCP tool, and dynamic triggers from agent markdown files.
+
+Agent files:
+  - ``main.agent.md`` — primary agent (chat endpoints, MCP, UI). Optional.
+  - ``<name>.agent.md`` — triggered agents with exactly one trigger each.
 """
 
+import glob
 import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import azure.functions as func
 import frontmatter
@@ -40,20 +45,23 @@ _MCP_AGENT_TOOL_PROPERTIES = json.dumps(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_agents_frontmatter_metadata() -> Dict[str, Any]:
-    """Load AGENTS.md frontmatter metadata as a dictionary."""
-    agents_md_path = _APP_ROOT / "AGENTS.md"
-    if not agents_md_path.exists():
-        return {}
+def _load_agent_file(path: Path) -> Optional[Dict[str, Any]]:
+    """Parse an agent markdown file and return its metadata + content.
 
+    Returns a dict with 'metadata' (frontmatter dict) and 'content' (body str),
+    or None if the file doesn't exist or can't be parsed.
+    """
+    if not path.exists():
+        return None
     try:
-        raw_content = agents_md_path.read_text(encoding="utf-8")
-        parsed = frontmatter.loads(raw_content)
+        raw = path.read_text(encoding="utf-8")
+        parsed = frontmatter.loads(raw)
         metadata = parsed.metadata if isinstance(parsed.metadata, dict) else {}
-        return metadata
+        content = (parsed.content or "").strip()
+        return {"metadata": metadata, "content": content}
     except Exception as exc:
-        logging.warning(f"Failed to parse AGENTS.md frontmatter: {exc}")
-        return {}
+        logging.warning(f"Failed to parse {path.name}: {exc}")
+        return None
 
 
 def _safe_mcp_tool_name(raw_name: str) -> str:
@@ -73,22 +81,13 @@ def _extract_mcp_session_id(payload: Dict[str, Any]) -> str | None:
     return None
 
 
-def _load_agents_functions_from_frontmatter(metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Load optional function definitions from AGENTS.md frontmatter."""
-    if not metadata:
-        logging.info("AGENTS.md not found or has no parseable frontmatter. No dynamic functions registered.")
-        return []
-
-    functions = metadata.get("functions")
-    if functions is None:
-        logging.info("AGENTS.md frontmatter has no 'functions' section. No dynamic functions registered.")
-        return []
-
-    if not isinstance(functions, list):
-        logging.warning("AGENTS.md frontmatter 'functions' must be an array. Ignoring dynamic functions.")
-        return []
-
-    return [item for item in functions if isinstance(item, dict)]
+def _safe_function_name(raw_name: str) -> str:
+    name = re.sub(r"[^a-zA-Z0-9_]", "_", raw_name).strip("_")
+    if not name:
+        return "agent_function"
+    if name[0].isdigit():
+        return f"fn_{name}"
+    return name
 
 
 def _normalize_timer_schedule(schedule: str) -> str:
@@ -97,10 +96,6 @@ def _normalize_timer_schedule(schedule: str) -> str:
     if len(schedule_parts) == 5:
         return f"0 {schedule.strip()}"
     return schedule.strip()
-
-
-def _is_valid_timer_schedule(schedule: str) -> bool:
-    return len(schedule.strip().split()) == 6
 
 
 def _to_bool(value: Any, default: bool = True) -> bool:
@@ -115,281 +110,238 @@ def _to_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
-def _safe_timer_name(raw_name: str) -> str:
-    name = re.sub(r"[^a-zA-Z0-9_]", "_", raw_name).strip("_")
-    if not name:
-        return "timer_agent"
-    if name[0].isdigit():
-        return f"timer_{name}"
-    return name
-
-
-def _safe_function_name(raw_name: str) -> str:
-    name = re.sub(r"[^a-zA-Z0-9_]", "_", raw_name).strip("_")
-    if not name:
-        return "agent_function"
-    if name[0].isdigit():
-        return f"fn_{name}"
-    return name
+def _resolve_trigger_params(trigger_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve env vars on all string values in trigger params."""
+    resolved = {}
+    for key, value in trigger_params.items():
+        if isinstance(value, str):
+            resolved[key] = resolve_env_var(value)
+        else:
+            resolved[key] = value
+    return resolved
 
 
 # ---------------------------------------------------------------------------
-# Dynamic function registration
+# Triggered agent registration (*.agent.md files)
 # ---------------------------------------------------------------------------
 
-def _register_dynamic_functions(
-    app: func.FunctionApp,
-    metadata: Dict[str, Any],
-) -> None:
-    function_specs = _load_agents_functions_from_frontmatter(metadata)
-    if not function_specs:
+def _register_triggered_agents(app: func.FunctionApp) -> None:
+    """Discover and register triggered agents from *.agent.md files."""
+    agent_files = sorted(glob.glob(str(_APP_ROOT / "*.agent.md")))
+    if not agent_files:
+        logging.info("No agent files found.")
         return
 
+    connectors_instance = None  # Lazy-init if needed
     registered_names: set = set()
-    connector_trigger_specs: List[tuple] = []
 
-    for index, spec in enumerate(function_specs, start=1):
-        trigger_value = spec.get("trigger", "timer")
-        trigger = str(trigger_value).strip().lower()
+    for agent_path_str in agent_files:
+        agent_path = Path(agent_path_str)
 
-        if trigger == "timer":
-            _register_timer_function(app, spec, index, registered_names)
-        elif trigger == "teams_new_channel_message":
-            connector_trigger_specs.append((index, spec))
-        else:
-            logging.warning(
-                f"Rejected AGENTS function #{index}: unsupported trigger '{trigger}' (raw={trigger_value!r})."
-            )
+        # Skip the main agent — it's handled separately
+        if agent_path.name == "main.agent.md":
             continue
 
-    # Register connector triggers (Teams, etc.) if any are present
-    if connector_trigger_specs:
-        _register_connector_triggers(app, connector_trigger_specs, registered_names)
+        agent = _load_agent_file(agent_path)
+        if not agent:
+            continue
 
+        metadata = agent["metadata"]
+        content = agent["content"]
+        trigger_spec = metadata.get("trigger")
 
-def _register_timer_function(
-    app: func.FunctionApp,
-    spec: Dict[str, Any],
-    index: int,
-    registered_names: set,
-) -> None:
-    """Register a single timer-triggered function from the spec."""
-    schedule_raw = spec.get("schedule")
-    prompt_raw = spec.get("prompt")
+        if not isinstance(trigger_spec, dict) or "type" not in trigger_spec:
+            logging.warning(f"Skipping {agent_path.name}: missing or invalid 'trigger' section (must have 'type')")
+            continue
 
-    if not isinstance(schedule_raw, str) or not schedule_raw.strip():
-        logging.warning(f"Skipping AGENTS function #{index}: missing required 'schedule'")
-        return
+        # Extract trigger type and params
+        trigger_type = str(trigger_spec["type"]).strip()
+        trigger_params = {k: v for k, v in trigger_spec.items() if k != "type"}
 
-    if not isinstance(prompt_raw, str) or not prompt_raw.strip():
-        logging.warning(f"Skipping AGENTS function #{index}: missing required 'prompt'")
-        return
+        # Resolve env vars on string params
+        trigger_params = _resolve_trigger_params(trigger_params)
 
-    schedule = _normalize_timer_schedule(schedule_raw)
-    if not _is_valid_timer_schedule(schedule):
-        logging.warning(
-            f"Skipping AGENTS function #{index}: invalid schedule '{schedule_raw}' after normalization '{schedule}'"
-        )
-        return
+        # Agent-level settings
+        agent_name = metadata.get("name", agent_path.stem)
+        should_log = _to_bool(metadata.get("logger", True), default=True)
 
-    base_name = _safe_timer_name(str(spec.get("name") or f"timer_agent_{index}"))
-    function_name = base_name
-    suffix = 2
-    while function_name in registered_names:
-        function_name = f"{base_name}_{suffix}"
-        suffix += 1
-    registered_names.add(function_name)
+        # Function name from filename
+        base_name = _safe_function_name(agent_path.stem)
+        function_name = base_name
+        suffix = 2
+        while function_name in registered_names:
+            function_name = f"{base_name}_{suffix}"
+            suffix += 1
+        registered_names.add(function_name)
 
-    prompt = prompt_raw.strip()
-    should_log_response = _to_bool(spec.get("logger", True), default=True)
+        # Per-agent connector tools and sandbox (configure globally)
+        agent_connections = metadata.get("tools_from_connections")
+        if isinstance(agent_connections, list):
+            configure_connector_tools(agent_connections)
 
-    def _make_timer_handler(
-        timer_function_name: str,
-        timer_schedule: str,
-        timer_prompt: str,
-        log_response: bool,
-    ):
-        async def _timer_handler(timer_request: func.TimerRequest) -> None:
-            if timer_request.past_due:
-                logging.info(f"Timer '{timer_function_name}' is past due.")
+        agent_sandbox = metadata.get("execution_sandbox")
+        if isinstance(agent_sandbox, dict):
+            configure_sandbox(agent_sandbox)
 
-            logging.info(f"Timer '{timer_function_name}' running with schedule '{timer_schedule}'")
-
-            try:
-                result = await run_copilot_agent(timer_prompt)
-                if log_response:
-                    logging.info(
-                        "Timer '%s' agent response: %s",
-                        timer_function_name,
-                        json.dumps(
-                            {
-                                "session_id": result.session_id,
-                                "response": result.content,
-                                "response_intermediate": result.content_intermediate,
-                                "tool_calls": result.tool_calls,
-                            },
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                    )
-            except Exception as exc:
-                logging.exception(f"Timer '{timer_function_name}' failed: {exc}")
-
-        _timer_handler.__name__ = f"timer_handler_{timer_function_name}"
-        return _timer_handler
-
-    handler = _make_timer_handler(function_name, schedule, prompt, should_log_response)
-    decorated = app.timer_trigger(
-        schedule=schedule,
-        arg_name="timer_request",
-        run_on_startup=False,
-    )(handler)
-    app.function_name(name=function_name)(decorated)
-
-    logging.info(
-        f"Registered dynamic timer function '{function_name}' from AGENTS.md (schedule='{schedule}', logger={should_log_response})"
-    )
-
-
-def _register_connector_triggers(
-    app: func.FunctionApp,
-    trigger_specs: List[tuple],
-    registered_names: set,
-) -> None:
-    """Register connector-based triggers (e.g., Teams new channel message)."""
-    try:
-        import azure.functions_connectors as fc
-    except ImportError:
-        logging.error(
-            "azure-functions-connectors package not installed. "
-            "Cannot register connector triggers. "
-            "Install from: https://github.com/anthonychu/azure-functions-connectors-python"
-        )
-        return
-
-    connectors = fc.FunctionsConnectors(app)
-
-    for index, spec in trigger_specs:
-        trigger = str(spec.get("trigger", "")).strip().lower()
-
-        if trigger == "teams_new_channel_message":
-            _register_teams_trigger(connectors, spec, index, registered_names)
-        else:
-            logging.warning(f"Skipping AGENTS function #{index}: unsupported connector trigger '{trigger}'")
-
-
-def _register_teams_trigger(
-    connectors,
-    spec: Dict[str, Any],
-    index: int,
-    registered_names: set,
-) -> None:
-    """Register a Teams new channel message trigger."""
-    connection_id_raw = spec.get("connection_id")
-    team_id_raw = spec.get("team_id")
-    channel_id_raw = spec.get("channel_id")
-
-    if not connection_id_raw:
-        logging.warning(f"Skipping AGENTS function #{index}: missing required 'connection_id' for teams_new_channel_message")
-        return
-    if not team_id_raw:
-        logging.warning(f"Skipping AGENTS function #{index}: missing required 'team_id' for teams_new_channel_message")
-        return
-    if not channel_id_raw:
-        logging.warning(f"Skipping AGENTS function #{index}: missing required 'channel_id' for teams_new_channel_message")
-        return
-
-    connection_id = resolve_env_var(str(connection_id_raw))
-    team_id = resolve_env_var(str(team_id_raw))
-    channel_id = resolve_env_var(str(channel_id_raw))
-
-    for label, val, raw in [
-        ("connection_id", connection_id, connection_id_raw),
-        ("team_id", team_id, team_id_raw),
-        ("channel_id", channel_id, channel_id_raw),
-    ]:
-        if not val or val.startswith("%") or val.startswith("$"):
-            logging.warning(
-                f"Skipping AGENTS function #{index}: could not resolve {label} '{raw}'"
+        # Determine if this is a built-in trigger or connector trigger
+        # Dot notation routes to the connectors library (e.g. "teams.new_channel_message_trigger").
+        # "connectors." prefix is stripped if present (e.g. "connectors.generic_trigger" → "generic_trigger").
+        is_connector = "." in trigger_type
+        if is_connector:
+            # Strip leading "connectors." prefix if present
+            connector_type = trigger_type.removeprefix("connectors.")
+            connectors_instance = _register_connector_agent(
+                app, connectors_instance, function_name, agent_name,
+                connector_type, trigger_params, content, should_log,
             )
-            return
+        else:
+            # Built-in Azure Functions trigger
+            _register_builtin_agent(
+                app, function_name, agent_name,
+                trigger_type, trigger_params, content, should_log,
+            )
 
-    # Optional polling interval overrides
-    min_interval = spec.get("min_interval")
-    max_interval = spec.get("max_interval")
 
-    base_name = _safe_function_name(str(spec.get("name") or f"teams_agent_{index}"))
-    function_name = base_name
-    suffix = 2
-    while function_name in registered_names:
-        function_name = f"{base_name}_{suffix}"
-        suffix += 1
-    registered_names.add(function_name)
+def _register_builtin_agent(
+    app: func.FunctionApp,
+    function_name: str,
+    agent_name: str,
+    trigger_type: str,
+    trigger_params: Dict[str, Any],
+    prompt: str,
+    should_log: bool,
+) -> None:
+    """Register a triggered agent using a built-in Azure Functions trigger."""
+    # Get the decorator method from the FunctionApp
+    decorator_fn = getattr(app, trigger_type, None)
+    if decorator_fn is None:
+        logging.warning(f"Skipping '{function_name}': unknown trigger type '{trigger_type}'")
+        return
 
-    should_log_response = _to_bool(spec.get("logger", True), default=True)
+    # Timer triggers: normalize schedule, use agent body as prompt
+    if trigger_type == "timer_trigger":
+        if "schedule" in trigger_params:
+            trigger_params["schedule"] = _normalize_timer_schedule(str(trigger_params["schedule"]))
 
-    def _make_teams_handler(handler_function_name: str, log_response: bool):
-        async def _teams_handler(message):
-            logging.info(f"Teams trigger '{handler_function_name}' received new channel message")
+    # Create handler
+    handler = _make_agent_handler(function_name, agent_name, prompt, should_log)
 
-            try:
-                # Serialize the full trigger payload as prompt
-                if hasattr(message, "to_dict"):
-                    payload = message.to_dict()
-                elif hasattr(message, "model_dump"):
-                    payload = message.model_dump()
-                elif isinstance(message, dict):
-                    payload = message
-                else:
-                    payload = {"raw": str(message)}
+    # Register with auto-generated arg_name
+    trigger_params["arg_name"] = "trigger_data"
+    try:
+        decorated = decorator_fn(**trigger_params)(handler)
+        app.function_name(name=function_name)(decorated)
+        logging.info(f"Registered '{function_name}' ({trigger_type}) — {agent_name}")
+    except Exception as exc:
+        logging.error(f"Failed to register '{function_name}' ({trigger_type}): {exc}")
 
-                prompt = json.dumps(payload, ensure_ascii=False, default=str)
-                result = await run_copilot_agent(prompt)
 
-                if log_response:
-                    logging.info(
-                        "Teams trigger '%s' agent response: %s",
-                        handler_function_name,
-                        json.dumps(
-                            {
-                                "session_id": result.session_id,
-                                "response": result.content,
-                                "response_intermediate": result.content_intermediate,
-                                "tool_calls": result.tool_calls,
-                            },
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                    )
-            except Exception as exc:
-                logging.exception(f"Teams trigger '{handler_function_name}' failed: {exc}")
+def _register_connector_agent(
+    app: func.FunctionApp,
+    connectors_instance,
+    function_name: str,
+    agent_name: str,
+    trigger_type: str,
+    trigger_params: Dict[str, Any],
+    prompt: str,
+    should_log: bool,
+):
+    """Register a triggered agent using a connector trigger.
 
-        _teams_handler.__name__ = f"teams_handler_{handler_function_name}"
-        return _teams_handler
+    Returns the connectors instance (created lazily on first use).
+    """
+    if connectors_instance is None:
+        try:
+            import azure.functions_connectors as fc
+            connectors_instance = fc.FunctionsConnectors(app)
+        except ImportError:
+            logging.error(
+                f"Skipping '{function_name}': azure-functions-connectors package not installed. "
+                "Install from: https://github.com/anthonychu/azure-functions-connectors-python"
+            )
+            return None
 
-    handler = _make_teams_handler(function_name, should_log_response)
+    # Resolve the decorator via getattr chain (e.g. "teams.new_channel_message_trigger")
+    # For top-level methods like "generic_trigger", it's a single getattr
+    parts = trigger_type.split(".")
+    obj = connectors_instance
+    try:
+        for part in parts:
+            obj = getattr(obj, part)
+        decorator_fn = obj
+    except AttributeError:
+        logging.warning(f"Skipping '{function_name}': could not resolve connector trigger '{trigger_type}'")
+        return connectors_instance
+
+    handler = _make_agent_handler(function_name, agent_name, prompt, should_log)
 
     try:
-        trigger_kwargs = {
-            "connection_id": connection_id,
-            "team_id": team_id,
-            "channel_id": channel_id,
-        }
-        if min_interval is not None:
-            trigger_kwargs["min_interval"] = int(min_interval)
-        if max_interval is not None:
-            trigger_kwargs["max_interval"] = int(max_interval)
-
-        connectors.teams.new_channel_message_trigger(**trigger_kwargs)(handler)
-
-        logging.info(
-            f"Registered Teams channel message trigger '{function_name}' from AGENTS.md "
-            f"(team_id='{team_id}', channel_id='{channel_id}'"
-            f"{f', min_interval={min_interval}' if min_interval is not None else ''}"
-            f"{f', max_interval={max_interval}' if max_interval is not None else ''})"
-        )
+        decorator_fn(**trigger_params)(handler)
+        logging.info(f"Registered '{function_name}' ({trigger_type}) — {agent_name}")
     except Exception as exc:
-        logging.error(f"Failed to register Teams trigger '{function_name}': {exc}")
+        logging.error(f"Failed to register '{function_name}' ({trigger_type}): {exc}")
+
+    return connectors_instance
+
+
+def _make_agent_handler(
+    function_name: str,
+    agent_name: str,
+    default_prompt: str,
+    should_log: bool,
+):
+    """Create an async handler function for a triggered agent."""
+    async def _handler(trigger_data):
+        logging.info(f"Agent '{function_name}' triggered")
+
+        try:
+            # Timer triggers: use agent body as prompt (no meaningful incoming data)
+            if hasattr(trigger_data, "past_due"):
+                if trigger_data.past_due:
+                    logging.info(f"Agent '{function_name}' is past due.")
+                prompt = default_prompt
+            elif trigger_data is not None:
+                # Serialize incoming data as prompt
+                if hasattr(trigger_data, "to_dict"):
+                    payload = trigger_data.to_dict()
+                elif hasattr(trigger_data, "model_dump"):
+                    payload = trigger_data.model_dump()
+                elif isinstance(trigger_data, dict):
+                    payload = trigger_data
+                elif isinstance(trigger_data, str):
+                    payload = trigger_data
+                else:
+                    payload = str(trigger_data)
+
+                if isinstance(payload, dict):
+                    prompt = json.dumps(payload, ensure_ascii=False, default=str)
+                else:
+                    prompt = str(payload)
+            else:
+                prompt = default_prompt
+
+            result = await run_copilot_agent(prompt)
+
+            if should_log:
+                logging.info(
+                    "Agent '%s' response: %s",
+                    function_name,
+                    json.dumps(
+                        {
+                            "session_id": result.session_id,
+                            "response": result.content,
+                            "response_intermediate": result.content_intermediate,
+                            "tool_calls": result.tool_calls,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                )
+        except Exception as exc:
+            logging.exception(f"Agent '{function_name}' failed: {exc}")
+
+    _handler.__name__ = f"handler_{function_name}"
+    return _handler
 
 
 # ---------------------------------------------------------------------------
@@ -401,8 +353,18 @@ def create_function_app() -> func.FunctionApp:
 
     app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
-    # ---- Load AGENTS.md frontmatter ----
-    metadata = _load_agents_frontmatter_metadata()
+    # ---- Load main agent (main.agent.md) ----
+    main_agent = _load_agent_file(_APP_ROOT / "main.agent.md")
+
+    # ---- Register triggered agents from *.agent.md ----
+    _register_triggered_agents(app)
+
+    # If no main agent, skip HTTP/MCP/UI endpoints
+    if not main_agent:
+        logging.info("No main.agent.md found — HTTP chat, MCP, and UI endpoints are disabled.")
+        return app
+
+    metadata = main_agent["metadata"]
 
     mcp_tool_name = _safe_mcp_tool_name(
         str(metadata.get("name") or "agent_chat")
@@ -411,10 +373,7 @@ def create_function_app() -> func.FunctionApp:
         metadata.get("description") or "Run an agent chat turn with a prompt."
     ).strip() or "Run an agent chat turn with a prompt."
 
-    # ---- Register dynamic functions (timer, Teams) ----
-    _register_dynamic_functions(app, metadata)
-
-    # ---- Configure connector tools from frontmatter ----
+    # ---- Configure connector tools from main agent frontmatter ----
     tools_from_connections = metadata.get("tools_from_connections")
     if isinstance(tools_from_connections, list):
         configure_connector_tools(tools_from_connections)

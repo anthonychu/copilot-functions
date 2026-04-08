@@ -2,7 +2,7 @@
 
 > **⚠️ This is an experimental feature.** The agent runtime, deployment model, and APIs described here are under active development and subject to change.
 
-Today, you can build custom agents with GitHub Copilot. You define your agent's personality and behavior in a markdown file (`AGENTS.md`), add skills as knowledge files, and configure MCP servers for live data and actions. All of that just works in VS Code or Copilot CLI — locally, on your machine.
+Today, you can build custom agents with GitHub Copilot. You define your agent's personality and behavior in a markdown file (`.agent.md`), add skills as knowledge files, and configure MCP servers for live data and actions. All of that just works in VS Code or Copilot CLI — locally, on your machine.
 
 This repo demonstrates an experimental new runtime that lets you deploy the same markdown-based agent project to Azure Functions with zero code changes. The agent runs in the cloud, behind an HTTP API, and can be called from anywhere.
 
@@ -21,7 +21,7 @@ This repo demonstrates an experimental new runtime that lets you deploy the same
 
 **Hosting your agent in Azure Functions**
 
-Azure Functions is a serverless compute platform that already supports runtimes like JavaScript, Python, and .NET. An agent project with `AGENTS.md`, skills, and MCP servers is just another workload. This experiment adds a new runtime to Azure Functions that natively understands and runs markdown-based agent projects.
+Azure Functions is a serverless compute platform that already supports runtimes like JavaScript, Python, and .NET. An agent project with `.agent.md` files, skills, and MCP servers is just another workload. This experiment adds a new runtime to Azure Functions that natively understands and runs markdown-based agent projects.
 
 Development workflow:
 
@@ -36,7 +36,8 @@ This repo includes a sample **Teams chat agent** that responds to messages in a 
 ```
 src/                           # Self-contained Azure Functions app
 ├── function_app.py            # Thin entry point (imports copilot_functions)
-├── AGENTS.md                  # Agent instructions and behavior (+ optional frontmatter)
+├── main.agent.md              # Main agent (chat endpoints, MCP, UI)
+├── *.agent.md                 # Additional triggered agents (one trigger each)
 ├── host.json                  # Azure Functions host configuration
 ├── requirements.txt           # Python dependencies
 ├── .funcignore                # Files to exclude from deployment
@@ -47,7 +48,7 @@ src/                           # Self-contained Azure Functions app
 └── copilot_functions/         # Library: Azure Functions + Copilot SDK integration
     ├── app.py                 # create_function_app() factory
     ├── runner.py              # Agent execution and session management
-    ├── tools.py               # Dynamic tool discovery from tools/
+    ├── tools.py               # Dynamic tool discovery + built-in file tools
     ├── connector_tools.py     # Azure connector → Copilot tool generation
     ├── connectors.py          # ARM connector Swagger parsing
     ├── connector_tool_cache.py
@@ -61,9 +62,16 @@ src/                           # Self-contained Azure Functions app
         └── index.html         # Built-in chat UI
 ```
 
-The `src` folder is a complete Azure Functions Python app. `function_app.py` is a thin wrapper that calls `create_function_app()` from the `copilot_functions` library. Your agent definition lives in `AGENTS.md` and `tools/` — the library handles all the Copilot SDK integration, HTTP routes, MCP endpoints, and dynamic trigger registration.
+The `src` folder is a complete Azure Functions Python app. `function_app.py` is a thin wrapper that calls `create_function_app()` from the `copilot_functions` library.
 
-`AGENTS.md` supports optional YAML frontmatter. The frontmatter can be used to take your agent beyond HTTP or a chat interface by integrating with Azure Functions' event-driven programming model. For example, you can define timer-triggered functions that run on a [schedule](#timer-triggers-from-agentsmd-frontmatter) without needing to write any Azure Functions code.
+### Multi-agent architecture
+
+Agents are defined as markdown files in the `src` folder:
+
+- **`main.agent.md`** — The primary agent. Accessible via HTTP chat endpoints (`/agent/chat`, `/agent/chatstream`), MCP, and the built-in chat UI. If this file doesn't exist, those endpoints are disabled. Has no trigger — it responds to HTTP requests.
+- **`<name>.agent.md`** — Triggered agents. Each defines exactly **one trigger** (timer, queue, Teams message, etc.) and runs automatically when that event fires. The filename (minus `.agent.md`) becomes the Azure Functions function name.
+
+All agents share the same `tools/`, `skills/`, and `copilot_functions/` library. Each agent can independently configure `tools_from_connections` and `execution_sandbox`.
 
 ## Running Locally in VS Code
 
@@ -72,7 +80,7 @@ The `src` folder is a complete Azure Functions Python app. `function_app.py` is 
 3. Enable built-in tools in Copilot Chat
 4. Start chatting with your agent in Copilot Chat
 
-Your agent's instructions from `AGENTS.md`, skills from `.github/skills/`, and MCP servers from `.vscode/mcp.json` are all automatically loaded.
+Your agent's instructions from `main.agent.md`, skills from `skills/`, and MCP servers from `.vscode/mcp.json` are all automatically loaded.
 
 ## Deploying to Azure Functions
 
@@ -138,89 +146,206 @@ When running in Azure, agent sessions are automatically persisted to an Azure Fi
 
 Locally, sessions are stored in `~/.copilot/session-state/`.
 
-## Triggers from `AGENTS.md` Frontmatter
+## Triggered Agents
 
-You can define event-driven agent runs directly in `src/AGENTS.md` frontmatter using a `functions` array. The agent supports multiple trigger types:
+Each `<name>.agent.md` file (other than `main.agent.md`) defines an event-driven agent with exactly one trigger. The trigger fires an Azure Function that runs the agent with the event data as the prompt.
 
-### Timer Triggers
-
-Run your agent on a schedule:
+### Frontmatter Structure
 
 ```yaml
 ---
-functions:
-  - name: timerAgent
-    trigger: timer
-    schedule: "0 */2 * * * *"
-    prompt: "What's the price of a Standard_D4s_v5 VM in East US?"
-    logger: true
+name: Human-readable agent name
+description: What this agent does
+trigger:
+  type: <trigger_type>
+  # ... trigger-specific parameters (passed 1:1 to the decorator)
+logger: true                   # optional, default true — log full agent responses
+tools_from_connections:        # optional — same as main agent
+  - connection_id: $CONNECTION_ID
+execution_sandbox:             # optional — same as main agent
+  session_pool_management_endpoint: $ACA_SESSION_POOL_ENDPOINT
 ---
+
+Agent instructions go here...
 ```
 
-- `schedule` and `prompt` are required for timer entries.
-- `name` is optional (a safe unique name is generated if omitted).
-- `logger` is optional and defaults to `true`.
+The `trigger` section maps directly to an Azure Functions trigger decorator:
+- `type` selects the decorator method
+- All other fields are passed as keyword arguments
+- `arg_name` is auto-generated (never specified in frontmatter)
 
-### Connector Triggers (Teams Channel Messages)
+### Trigger Type Resolution
 
-Trigger your agent when a new message appears in a Microsoft Teams channel:
+| `type` format | Resolves to | Example |
+|---|---|---|
+| No dots (e.g. `timer_trigger`) | `app.timer_trigger(...)` | Built-in Azure Functions triggers |
+| Dots (e.g. `teams.new_channel_message_trigger`) | Connector library method chain | [azure-functions-connectors](https://github.com/anthonychu/azure-functions-connectors-python) triggers |
+| `connectors.` prefix (e.g. `connectors.generic_trigger`) | `connectors.generic_trigger(...)` | Disambiguates from built-in `generic_trigger` |
+
+New triggers added to either library are automatically supported — no code changes needed.
+
+### Timer Trigger
 
 ```yaml
 ---
-functions:
-  - name: teams_chat_agent
-    trigger: teams_new_channel_message
-    connection_id: /subscriptions/.../providers/Microsoft.Web/connections/teams
-    team_id: <team-guid>
-    channel_id: <channel-id>
-    min_interval: 30    # optional: seconds between polls when active (default: 60)
-    max_interval: 120   # optional: max seconds between polls when idle (default: 300)
-    logger: true
+name: Daily report
+description: Generates a daily summary report
+trigger:
+  type: timer_trigger
+  schedule: "0 0 9 * * *"
+  run_on_startup: false
+logger: true
 ---
 ```
 
-- `connection_id` is the ARM resource ID of an authenticated Azure API Connection for the Teams connector.
-- `team_id` and `channel_id` identify the Teams channel to monitor.
-- `min_interval` (optional, default: 60) — polling interval in seconds after items are found (fastest rate).
-- `max_interval` (optional, default: 300) — maximum polling interval in seconds when idle (backoff cap).
-- `connection_id`, `team_id`, and `channel_id` support [environment variable substitution](#environment-variable-substitution).
-- When the trigger fires, the full Teams message JSON payload is passed as the prompt to the agent.
+### Teams Channel Message Trigger
 
-The connector trigger uses the [azure-functions-connectors](https://github.com/anthonychu/azure-functions-connectors-python) package, which polls the connector for new items and dispatches them via Azure Storage Queues.
+```yaml
+---
+name: Teams chat agent
+description: Responds to messages on a Teams channel
+trigger:
+  type: teams.new_channel_message_trigger
+  connection_id: $TEAMS_CONNECTION_ID
+  team_id: $TEAMS_TEAM_ID
+  channel_id: $TEAMS_CHANNEL_ID
+  min_interval: 30
+  max_interval: 90
+---
+```
 
-**Prerequisites for connector triggers:**
+### Queue Trigger
 
-1. An Azure API Connection resource (e.g., Teams) — created and authenticated via Azure Portal or CLI
-2. The function app's managed identity must have `Microsoft.Web/connections/dynamicInvoke/action` and `Microsoft.Web/connections/read` permissions on the connection (Contributor or a custom role)
-3. `AZURE_CLIENT_ID` app setting must be set to the managed identity's client ID (automatically configured by the included Bicep templates)
-4. Azure Storage Queue and Table endpoints must be enabled (automatically configured by the included Bicep templates)
+```yaml
+---
+name: Order processor
+description: Processes new orders from a queue
+trigger:
+  type: queue_trigger
+  queue_name: new-orders
+  connection: AzureWebJobsStorage
+---
+```
+
+### Blob Trigger
+
+```yaml
+---
+name: Document analyzer
+description: Analyzes uploaded documents
+trigger:
+  type: blob_trigger
+  path: uploads/{name}
+  connection: AzureWebJobsStorage
+---
+```
+
+### Event Hub Trigger
+
+```yaml
+---
+name: Telemetry processor
+description: Processes telemetry events
+trigger:
+  type: event_hub_message_trigger
+  connection: EventHubConnection
+  event_hub_name: telemetry
+  consumer_group: $Default
+---
+```
+
+### Service Bus Queue Trigger
+
+```yaml
+---
+name: Task worker
+description: Processes tasks from a Service Bus queue
+trigger:
+  type: service_bus_queue_trigger
+  connection: ServiceBusConnection
+  queue_name: tasks
+---
+```
+
+### Cosmos DB Trigger
+
+```yaml
+---
+name: Change feed processor
+description: Reacts to Cosmos DB changes
+trigger:
+  type: cosmos_db_trigger_v3
+  database_name: mydb
+  collection_name: items
+  connection_string_setting: CosmosDBConnection
+---
+```
+
+### Generic Connector Trigger
+
+Works with any Azure managed connector:
+
+```yaml
+---
+name: Salesforce lead handler
+description: Processes new Salesforce leads
+trigger:
+  type: connectors.generic_trigger
+  connection_id: $SALESFORCE_CONNECTION_ID
+  trigger_path: /trigger/datasets/default/tables/Lead/onnewitems
+  min_interval: 60
+  max_interval: 300
+---
+```
+
+### Office 365 New Email Trigger
+
+```yaml
+---
+name: Email processor
+description: Processes incoming emails
+trigger:
+  type: office365.new_email_trigger
+  connection_id: $OFFICE365_CONNECTION_ID
+  folder: Inbox
+---
+```
 
 ### Common Behavior
 
-- `functions` section is optional.
-- `name` is optional for all trigger types (a safe unique name is generated if omitted).
+- The agent's markdown body is used as system instructions.
+- When a trigger fires, the event data is serialized to JSON and passed as the agent's prompt.
 - `logger` defaults to `true`. When enabled, the agent's full output is logged including `session_id`, `response`, `response_intermediate`, and `tool_calls`.
-- All trigger functions are registered at startup from frontmatter and run in the same runtime as `/agent/chat`.
+- Each triggered agent can have its own `tools_from_connections` and `execution_sandbox` configuration.
+- All triggered agents share the same custom tools from `tools/` and skills from `skills/`.
+
+### Prerequisites for Connector Triggers
+
+1. An Azure API Connection resource (e.g., Teams, Office 365) — created and authenticated via Azure Portal or CLI
+2. The function app's managed identity must have `Microsoft.Web/connections/dynamicInvoke/action` and `Microsoft.Web/connections/read` permissions on the connection
+3. `AZURE_CLIENT_ID` app setting must be set to the managed identity's client ID (automatically configured by the included Bicep templates)
+4. Azure Storage Queue and Table endpoints must be enabled (automatically configured by the included Bicep templates)
 
 ### Environment Variable Substitution
 
 Certain frontmatter fields support `%ENV_VAR%` or `$ENV_VAR` syntax to reference environment variables (app settings). Substitution is **full-string only** — the entire value must be a single variable reference (partial substitution like `prefix$VAR` is not supported).
 
-**Fields that support substitution** (resource identifiers and endpoints):
+All **string** values in the `trigger` section (except `type`) support substitution. Non-string values (booleans, integers) are passed through as-is.
+
+Other fields that support substitution:
 
 | Section | Field |
 |---------|-------|
-| `functions[]` | `connection_id`, `team_id`, `channel_id` |
 | `tools_from_connections[]` | `connection_id` |
 | `execution_sandbox` | `session_pool_management_endpoint` |
 
-Fields like `name`, `trigger`, `schedule`, `prompt`, `min_interval`, `max_interval`, and `logger` do **not** support substitution.
+Fields like `name`, `description`, `trigger.type`, and `logger` do **not** support substitution.
 
 If an environment variable is not set, the original string is returned unchanged and a warning is logged.
 
 ## Dynamic Tools from Azure Connectors
 
-You can give your agent tools that are dynamically discovered from Azure API Connections (managed connectors). Add a `tools_from_connections` section to your `AGENTS.md` frontmatter:
+You can give your agent tools that are dynamically discovered from Azure API Connections (managed connectors). Add a `tools_from_connections` section to your agent's frontmatter:
 
 ```yaml
 ---
@@ -245,7 +370,7 @@ Connector tools are cached for the lifetime of the function app instance. If a c
 
 ## Execution Sandbox (Code Interpreter)
 
-You can give your agent the ability to execute Python code in a sandboxed environment by adding an `execution_sandbox` section to your `AGENTS.md` frontmatter:
+You can give your agent the ability to execute Python code in a sandboxed environment by adding an `execution_sandbox` section to your agent's frontmatter:
 
 ```yaml
 ---

@@ -30,12 +30,12 @@ class AgentResult:
 
 
 def _load_agents_md_content() -> str:
-    """Load AGENTS.md content from disk (called once at module load)."""
+    """Load main.agent.md content from disk (called once at module load)."""
     app_root = str(get_app_root())
-    agents_md_path = os.path.join(app_root, "AGENTS.md")
-    logging.info(f"Loading AGENTS.md from: {agents_md_path}")
+    agents_md_path = os.path.join(app_root, "main.agent.md")
+    logging.info(f"Loading main.agent.md from: {agents_md_path}")
     if not os.path.exists(agents_md_path):
-        logging.warning(f"No AGENTS.md found at {agents_md_path}")
+        logging.warning(f"No main.agent.md found at {agents_md_path}")
         return ""
 
     try:
@@ -47,15 +47,15 @@ def _load_agents_md_content() -> str:
         metadata_count = len(parsed.metadata) if parsed.metadata else 0
 
         logging.info(
-            f"Loaded AGENTS.md ({len(raw_content)} chars, frontmatter keys={metadata_count}, body chars={len(content)})"
+            f"Loaded main.agent.md ({len(raw_content)} chars, frontmatter keys={metadata_count}, body chars={len(content)})"
         )
         return content
     except Exception as e:
-        logging.warning(f"Failed to read AGENTS.md: {e}")
+        logging.warning(f"Failed to read main.agent.md: {e}")
         return ""
 
 
-# Cache AGENTS.md content at module load time (won't change during runtime)
+# Cache main.agent.md content at module load time (won't change during runtime)
 _AGENTS_MD_CONTENT_CACHE = _load_agents_md_content()
 
 DEFAULT_MODEL = os.environ.get("COPILOT_MODEL", "claude-sonnet-4")

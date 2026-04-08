@@ -1,15 +1,14 @@
 ---
 name: Teams chat agent
 description: An agent that responds to messages on a Teams channel
-functions:
-  - name: teams_chat_agent
-    trigger: teams_new_channel_message
-    connection_id: $TEAMS_CONNECTION_ID
-    team_id: $TEAMS_TEAM_ID
-    channel_id: $TEAMS_CHANNEL_ID
-    min_interval: 30
-    max_interval: 90
-    logger: true
+trigger:
+  type: teams.new_channel_message_trigger
+  connection_id: $TEAMS_CONNECTION_ID
+  team_id: $TEAMS_TEAM_ID
+  channel_id: $TEAMS_CHANNEL_ID
+  min_interval: 30
+  max_interval: 90
+logger: true
 tools_from_connections:
   - connection_id: $TEAMS_CONNECTION_ID
 execution_sandbox:

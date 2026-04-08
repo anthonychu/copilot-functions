@@ -20,7 +20,7 @@ class _ConnectorToolCache:
         self._connection_specs: List[Dict[str, Any]] = []
 
     def set_connection_specs(self, specs: List[Dict[str, Any]]) -> None:
-        """Set the tools_from_connections specs from AGENTS.md frontmatter."""
+        """Set the tools_from_connections specs from agent frontmatter."""
         self._connection_specs = specs or []
 
     async def get_tools(self) -> list:
@@ -72,7 +72,7 @@ _cache = _ConnectorToolCache()
 
 
 def configure_connector_tools(tools_from_connections: List[Dict[str, Any]]) -> None:
-    """Configure the connector tool cache with specs from AGENTS.md frontmatter.
+    """Configure the connector tool cache with specs from agent frontmatter.
 
     Called once at module load time from function_app.py.
     """

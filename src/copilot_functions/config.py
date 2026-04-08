@@ -12,7 +12,7 @@ from typing import Optional
 def get_app_root() -> Path:
     """Return the root directory of the user's agent project.
 
-    This is the directory containing ``AGENTS.md``, ``tools/``,
+    This is the directory containing ``main.agent.md``, ``tools/``,
     ``.vscode/mcp.json``, skills directories, etc.  By default it is
     the parent of the ``copilot_functions`` package directory (i.e. the
     Azure Functions ``src/`` folder).
@@ -68,7 +68,7 @@ def session_exists(config_dir: Optional[str], session_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Environment variable substitution for AGENTS.md frontmatter values
+# Environment variable substitution for agent frontmatter values
 # ---------------------------------------------------------------------------
 
 _PERCENT_PATTERN = re.compile(r"^%([^%]+)%$")
@@ -88,19 +88,16 @@ def resolve_env_var(value: str) -> str:
     environment variable is not set, the original string is returned
     unchanged.
 
-    The following AGENTS.md frontmatter fields are resolved through
+    The following agent frontmatter fields are resolved through
     this function (all represent external resource identifiers or
     endpoints):
 
-      - ``functions[].connection_id``
-      - ``functions[].team_id``
-      - ``functions[].channel_id``
+      - ``trigger.*`` (all string values except ``type``)
       - ``tools_from_connections[].connection_id``
       - ``execution_sandbox.session_pool_management_endpoint``
 
     Fields that should **not** use substitution (identifiers, literals,
-    or user-facing text): ``name``, ``description``, ``trigger``,
-    ``schedule``, ``prompt``, ``min_interval``, ``max_interval``,
+    or user-facing text): ``name``, ``description``, ``trigger.type``,
     ``logger``.
     """
     stripped = value.strip()

@@ -3,7 +3,7 @@ ACA Dynamic Sessions sandbox — execute_python tool.
 
 Provides an ``execute_python`` Copilot SDK tool backed by Azure Container Apps
 dynamic sessions (code-interpreter pools).  Configured via the
-``execution_sandbox`` block in AGENTS.md frontmatter.
+``execution_sandbox`` block in agent frontmatter.
 """
 
 from __future__ import annotations
@@ -293,7 +293,7 @@ _cache = _SandboxCache()
 
 
 def configure_sandbox(config: Dict[str, Any]) -> None:
-    """Configure the sandbox from AGENTS.md ``execution_sandbox`` frontmatter."""
+    """Configure the sandbox from ``execution_sandbox`` frontmatter."""
     _cache.configure(config)
 
 
