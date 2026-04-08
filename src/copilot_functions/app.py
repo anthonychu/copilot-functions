@@ -373,32 +373,35 @@ def create_function_app(app_root: Path | None = None) -> func.FunctionApp:
     # ---- Register triggered agents from *.agent.md ----
     _register_triggered_agents(app, resolved_root)
 
-    # If no main agent, skip HTTP/MCP/UI endpoints
-    if not main_agent:
-        logging.info("No main.agent.md found — HTTP chat, MCP, and UI endpoints are disabled.")
-        return app
-
-    metadata = main_agent["metadata"]
-
-    mcp_tool_name = _safe_mcp_tool_name(
-        str(metadata.get("name") or "agent_chat")
-    )
-    mcp_tool_description = str(
-        metadata.get("description") or "Run an agent chat turn with a prompt."
-    ).strip() or "Run an agent chat turn with a prompt."
-
-    # ---- Configure connector tools from main agent frontmatter ----
-    tools_from_connections = metadata.get("tools_from_connections")
-    if isinstance(tools_from_connections, list):
-        configure_connector_tools(tools_from_connections)
-
-    # ---- Configure execution sandbox from main agent frontmatter ----
+    # ---- Configure main agent (if present) ----
+    metadata: Dict[str, Any] = {}
     main_sandbox_tools: list = []
-    execution_sandbox = metadata.get("execution_sandbox")
-    if isinstance(execution_sandbox, dict):
-        main_sandbox_tools = create_sandbox_tools(execution_sandbox)
+    mcp_tool_name = "agent_chat"
+    mcp_tool_description = "Run an agent chat turn with a prompt."
 
-    # ---- HTTP routes ----
+    if main_agent:
+        metadata = main_agent["metadata"]
+
+        mcp_tool_name = _safe_mcp_tool_name(
+            str(metadata.get("name") or "agent_chat")
+        )
+        mcp_tool_description = str(
+            metadata.get("description") or "Run an agent chat turn with a prompt."
+        ).strip() or "Run an agent chat turn with a prompt."
+
+        # ---- Configure connector tools from main agent frontmatter ----
+        tools_from_connections = metadata.get("tools_from_connections")
+        if isinstance(tools_from_connections, list):
+            configure_connector_tools(tools_from_connections)
+
+        # ---- Configure execution sandbox from main agent frontmatter ----
+        execution_sandbox = metadata.get("execution_sandbox")
+        if isinstance(execution_sandbox, dict):
+            main_sandbox_tools = create_sandbox_tools(execution_sandbox)
+    else:
+        logging.info("No main.agent.md found — HTTP chat, MCP, and UI endpoints will return 404.")
+
+    # ---- HTTP routes (always registered) ----
 
     @app.route(
         route="{*ignored}",
@@ -409,6 +412,9 @@ def create_function_app(app_root: Path | None = None) -> func.FunctionApp:
         """Serve the chat UI at the root route."""
         ignored = (req.path_params or {}).get("ignored", "")
         if ignored:
+            return Response("Not found", status_code=404)
+
+        if not main_agent:
             return Response("Not found", status_code=404)
 
         index_path = Path(__file__).parent / "public" / "index.html"
@@ -493,6 +499,11 @@ def create_function_app(app_root: Path | None = None) -> func.FunctionApp:
             body = await req.json()
             prompt = body.get("prompt")
 
+            if not main_agent:
+                async def no_agent_gen():
+                    yield f"data: {json.dumps({'type': 'error', 'content': 'No main.agent.md found. Create a main.agent.md file in the app root to enable this endpoint.'})}\n\n"
+                return StreamingResponse(no_agent_gen(), media_type="text/event-stream", status_code=404)
+
             if not prompt:
                 async def error_gen():
                     yield f"data: {json.dumps({'type': 'error', 'content': 'Missing prompt'})}\n\n"
@@ -511,39 +522,40 @@ def create_function_app(app_root: Path | None = None) -> func.FunctionApp:
                 yield f"data: {json.dumps({'type': 'error', 'content': error_msg})}\n\n"
             return StreamingResponse(error_gen(), media_type="text/event-stream")
 
-    # ---- MCP tool ----
+    # ---- MCP tool (only when main agent exists) ----
 
-    @app.mcp_tool_trigger(
-        arg_name="context",
-        tool_name=mcp_tool_name,
-        description=mcp_tool_description,
-        tool_properties=_MCP_AGENT_TOOL_PROPERTIES,
-    )
-    async def mcp_agent_chat(context: str) -> str:
-        """MCP tool endpoint that runs the same agent workflow as /agent/chat."""
-        try:
-            payload = json.loads(context) if context else {}
-            arguments = payload.get("arguments", {}) if isinstance(payload, dict) else {}
+    if main_agent:
+        @app.mcp_tool_trigger(
+            arg_name="context",
+            tool_name=mcp_tool_name,
+            description=mcp_tool_description,
+            tool_properties=_MCP_AGENT_TOOL_PROPERTIES,
+        )
+        async def mcp_agent_chat(context: str) -> str:
+            """MCP tool endpoint that runs the same agent workflow as /agent/chat."""
+            try:
+                payload = json.loads(context) if context else {}
+                arguments = payload.get("arguments", {}) if isinstance(payload, dict) else {}
 
-            prompt = arguments.get("prompt") if isinstance(arguments, dict) else None
-            if not isinstance(prompt, str) or not prompt.strip():
-                return json.dumps({"error": "Missing 'prompt'"})
+                prompt = arguments.get("prompt") if isinstance(arguments, dict) else None
+                if not isinstance(prompt, str) or not prompt.strip():
+                    return json.dumps({"error": "Missing 'prompt'"})
 
-            session_id = _extract_mcp_session_id(payload) if isinstance(payload, dict) else None
+                session_id = _extract_mcp_session_id(payload) if isinstance(payload, dict) else None
 
-            result = await run_copilot_agent(prompt.strip(), session_id=session_id, sandbox_tools=main_sandbox_tools)
+                result = await run_copilot_agent(prompt.strip(), session_id=session_id, sandbox_tools=main_sandbox_tools)
 
-            return json.dumps(
-                {
-                    "session_id": result.session_id,
-                    "response": result.content,
-                    "response_intermediate": result.content_intermediate,
-                    "tool_calls": result.tool_calls,
-                }
-            )
-        except Exception as exc:
-            error_msg = str(exc) if str(exc) else f"{type(exc).__name__}: {repr(exc)}"
-            logging.error(f"MCP tool error: {error_msg}")
-            return json.dumps({"error": error_msg})
+                return json.dumps(
+                    {
+                        "session_id": result.session_id,
+                        "response": result.content,
+                        "response_intermediate": result.content_intermediate,
+                        "tool_calls": result.tool_calls,
+                    }
+                )
+            except Exception as exc:
+                error_msg = str(exc) if str(exc) else f"{type(exc).__name__}: {repr(exc)}"
+                logging.error(f"MCP tool error: {error_msg}")
+                return json.dumps({"error": error_msg})
 
     return app
