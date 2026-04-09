@@ -19,8 +19,8 @@ param location string
 @minLength(1)
 param githubToken string
 
-@description('GitHub Copilot model to use (e.g. gpt-4.1, claude-sonnet-4, gpt-5.2).')
-param copilotModel string = 'gpt-4.1'
+@description('GitHub Copilot model to use (e.g. claude-sonnet-4.6, claude-opus-4.6).')
+param copilotModel string = 'claude-sonnet-4.6'
 
 @description('ARM resource ID of an ACA dynamic sessions pool for the execution sandbox.')
 param acaSessionPoolResourceId string
