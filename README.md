@@ -119,8 +119,6 @@ Then set the storage connection string in `local.settings.json`:
 }
 ```
 
-> If you only need HTTP chat endpoints (no MCP, no triggers), you can skip Azurite and set `AzureWebJobsStorage` to `""`.
-
 ### 6. Run locally
 
 ```bash
@@ -131,17 +129,29 @@ Your agent is now running at `http://localhost:7071/` with a built-in chat UI, H
 
 ## Features
 
+### `main.agent.md`
+
+Define an agent with a markdown file. When `main.agent.md` is present, the runtime automatically registers:
+
+- **Chat UI** — built-in single-page web interface at the app root
+- **HTTP APIs** — `POST /agent/chat` (JSON) and `POST /agent/chatstream` (SSE)
+- **MCP server** — `/runtime/webhooks/mcp` for VS Code, Claude Desktop, etc.
+- **Session persistence** — multi-turn conversations stored on Azure Files
+
+### Event-driven agents (`<name>.agent.md`)
+
+Define event-triggered agents with `.agent.md` files. Each file corresponds to a single Azure Function. Supported trigger types:
+
+- **Event triggers** — timer, queue, blob, Event Hub, Service Bus, Cosmos DB, Teams, Office 365, etc.
+- **HTTP triggers** — expose agents as REST API endpoints with structured JSON responses via `response_example`
+
+### Shared capabilities
 - **Markdown-first** — agent instructions, trigger config, and tool bindings in `.agent.md` files
-- **Multi-function** — each `.agent.md` file becomes an Azure Function that runs the agent when triggered. `main.agent.md` creates HTTP/MCP endpoints; other files create event-triggered functions (timer, queue, Teams, blob, etc.)
-- **HTTP APIs** — `POST /agent/chat` and `POST /agent/chatstream`
-- **MCP server** — `/runtime/webhooks/mcp`
-- **Chat UI** — built-in single-page UI at the app root
 - **Skills** — reusable prompt modules from `SKILL.md` files
 - **Custom tools** — drop a `.py` file in `tools/` and it becomes a callable tool
 - **Connector tools** — dynamically generated tools from Azure API Connections
-- **Sandbox environment with Playwright web browsing support** — code execution tool powered by Azure Container Apps dynamic sessions to run Python code and automate web browsing in a secure sandbox
-- **Event triggers** — timer, queue, blob, Event Hub, Service Bus, Cosmos DB, Teams, Office 365, etc.
-- **Session persistence** — Azure Files for multi-turn conversations
+- **MCP servers** — connect to external MCP servers for additional tools
+- **Sandbox** — code execution via Azure Container Apps dynamic sessions with Playwright web browsing support
 
 ## Agent File Format (`.agent.md`)
 
@@ -197,6 +207,8 @@ Trigger data:
 ```
 
 This applies to all trigger types, including timers (whose data includes fields like `past_due`).
+
+For a complete reference of all supported triggers and their parameters, see [docs/triggers.md](docs/triggers.md).
 
 ### Trigger type resolution
 
