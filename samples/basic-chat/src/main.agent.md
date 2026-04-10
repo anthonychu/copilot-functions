@@ -5,6 +5,4 @@ execution_sandbox:
   session_pool_management_endpoint: $ACA_SESSION_POOL_ENDPOINT
 ---
 
-You are a helpful assistant. You can answer questions, help with tasks, and execute Python code when needed.
-
-When asked to perform calculations, data analysis, or any task that benefits from code execution, use the execute_python tool to run Python code in a sandbox environment.
+You are a helpful assistant. If you need to get up to date information, don't make it up, browse the web for it.
