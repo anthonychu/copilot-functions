@@ -78,7 +78,7 @@ _EXCLUDED_BUILTIN_TOOLS = [
     # Web fetching (use MCP or execute_python instead)
     "web_fetch",
     # Not needed
-    "report_intent",
+    "report_intent", "store_memory", "fetch_copilot_cli_documentation",
 ]
 
 _TOOL_RESTRICTION_PREFIX = (
@@ -94,12 +94,12 @@ _TOOL_RESTRICTION_PREFIX = (
 _default_permission_handler = PermissionHandler.approve_all
 
 
-def _build_session_kwargs(
+def _build_base_kwargs(
     model: str = DEFAULT_MODEL,
-    session_id: Optional[str] = None,
     streaming: bool = False,
     extra_tools: Optional[list] = None,
 ) -> Dict[str, Any]:
+    """Build kwargs shared by both session creation and resume."""
     all_tools = list(_REGISTERED_TOOLS_CACHE)
     if extra_tools:
         all_tools.extend(extra_tools)
@@ -111,6 +111,7 @@ def _build_session_kwargs(
         "streaming": streaming,
         "tools": all_tools,
         "excluded_tools": _EXCLUDED_BUILTIN_TOOLS,
+        "enable_config_discovery": False,
         "system_message": {"mode": "replace", "content": system_content},
         "on_permission_request": _default_permission_handler,
     }
@@ -120,7 +121,6 @@ def _build_session_kwargs(
         foundry_endpoint = os.environ["AZURE_AI_FOUNDRY_ENDPOINT"]
         foundry_key = os.environ["AZURE_AI_FOUNDRY_API_KEY"]
         foundry_model = os.environ.get("AZURE_AI_FOUNDRY_MODEL", model)
-        # GPT-5 series models use the responses API format
         wire_api = "responses" if foundry_model.startswith("gpt-5") else "completions"
         kwargs["model"] = foundry_model
         kwargs["provider"] = ProviderConfig(
@@ -131,6 +131,21 @@ def _build_session_kwargs(
         )
         logging.info(f"BYOK mode: using Microsoft Foundry endpoint={foundry_endpoint}, model={foundry_model}, wire_api={wire_api}")
 
+    mcp_servers = get_cached_mcp_servers()
+    if mcp_servers:
+        kwargs["mcp_servers"] = mcp_servers
+
+    return kwargs
+
+
+def _build_session_kwargs(
+    model: str = DEFAULT_MODEL,
+    session_id: Optional[str] = None,
+    streaming: bool = False,
+    extra_tools: Optional[list] = None,
+) -> Dict[str, Any]:
+    kwargs = _build_base_kwargs(model=model, streaming=streaming, extra_tools=extra_tools)
+
     if session_id:
         kwargs["session_id"] = session_id
 
@@ -138,10 +153,6 @@ def _build_session_kwargs(
     if session_directory:
         kwargs["skill_directories"] = [session_directory]
         logging.info(f"Using skill_directories for skills discovery: {session_directory}")
-
-    mcp_servers = get_cached_mcp_servers()
-    if mcp_servers:
-        kwargs["mcp_servers"] = mcp_servers
 
     return kwargs
 
@@ -151,40 +162,34 @@ def _build_resume_kwargs(
     streaming: bool = False,
     extra_tools: Optional[list] = None,
 ) -> Dict[str, Any]:
-    all_tools = list(_REGISTERED_TOOLS_CACHE)
-    if extra_tools:
-        all_tools.extend(extra_tools)
+    return _build_base_kwargs(model=model, streaming=streaming, extra_tools=extra_tools)
 
-    system_content = _TOOL_RESTRICTION_PREFIX + _AGENTS_MD_CONTENT_CACHE
 
-    kwargs: Dict[str, Any] = {
-        "model": model,
-        "streaming": streaming,
-        "tools": all_tools,
-        "excluded_tools": _EXCLUDED_BUILTIN_TOOLS,
-        "system_message": {"mode": "replace", "content": system_content},
-        "on_permission_request": _default_permission_handler,
-    }
+async def _disable_non_project_skills(session) -> None:
+    """Disable skills not from the project's skill_directories.
 
-    # If Microsoft Foundry BYOK is configured, add provider config
-    if _is_byok_mode():
-        foundry_endpoint = os.environ["AZURE_AI_FOUNDRY_ENDPOINT"]
-        foundry_key = os.environ["AZURE_AI_FOUNDRY_API_KEY"]
-        foundry_model = os.environ.get("AZURE_AI_FOUNDRY_MODEL", model)
-        wire_api = "responses" if foundry_model.startswith("gpt-5") else "completions"
-        kwargs["model"] = foundry_model
-        kwargs["provider"] = ProviderConfig(
-            type="openai",
-            base_url=foundry_endpoint,
-            api_key=foundry_key,
-            wire_api=wire_api,
-        )
+    The CLI loads global skills from ~/.agents/skills/ and other paths which
+    are not relevant for serverless function apps. This uses the experimental
+    session.rpc.skills API to list all discovered skills and disable any that
+    aren't sourced from the project.
 
-    mcp_servers = get_cached_mcp_servers()
-    if mcp_servers:
-        kwargs["mcp_servers"] = mcp_servers
-
-    return kwargs
+    Workaround for https://github.com/github/copilot-sdk/issues/695
+    """
+    app_root = str(get_app_root())
+    skills_dir = os.path.join(app_root, "skills")
+    try:
+        from copilot.generated.rpc import SessionSkillsDisableParams
+        result = await session.rpc.skills.list()
+        for skill in result.skills:
+            if not skill.enabled:
+                continue
+            # Keep skills whose path is under {approot}/skills/
+            if skill.path and os.path.commonpath([skill.path, skills_dir]) == skills_dir:
+                continue
+            await session.rpc.skills.disable(SessionSkillsDisableParams(name=skill.name))
+            logging.debug(f"Disabled non-project skill: {skill.name} (source={skill.source})")
+    except Exception as e:
+        logging.warning(f"Could not filter skills (experimental API): {e}")
 
 
 async def run_copilot_agent(
@@ -219,6 +224,7 @@ async def run_copilot_agent(
         )
         session = await client.create_session(**session_kwargs)
         logging.info(f"Created new session: {session.session_id}")
+        await _disable_non_project_skills(session)
 
     response_content: List[str] = []
     tool_calls: List[Dict[str, Any]] = []
@@ -366,6 +372,7 @@ async def run_copilot_agent_stream(
         )
         session = await client.create_session(**session_kwargs, on_event=on_event)
         logging.info(f"[stream] Created new session: {session.session_id}")
+        await _disable_non_project_skills(session)
 
     # Yield the session ID first so the client knows it immediately
     yield f"data: {json.dumps({'type': 'session', 'session_id': session.session_id})}\n\n"

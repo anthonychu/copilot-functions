@@ -84,6 +84,11 @@ _ALLOWED_READ_DIRS = [
     os.path.normpath(tempfile.gettempdir()),
 ]
 
+# Allow reading skill reference files from {approot}/skills/
+_skills_dir = os.path.join(str(get_app_root()), "skills")
+if os.path.isdir(_skills_dir):
+    _ALLOWED_READ_DIRS.append(os.path.normpath(_skills_dir))
+
 
 def _check_access(path: str) -> Optional[str]:
     """Return an error JSON string if the path is not allowed, else None."""
