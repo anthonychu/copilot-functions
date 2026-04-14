@@ -1,3 +1,3 @@
-copilot-functions[connectors] @ https://github.com/anthonychu/copilot-functions/releases/download/v0.6.3/copilot_functions-0.6.3-py3-none-any.whl
+copilot-functions[connectors] @ https://github.com/anthonychu/copilot-functions/releases/download/v0.6.4/copilot_functions-0.6.4-py3-none-any.whl
 azure-identity
 jmespath
