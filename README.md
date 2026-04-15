@@ -19,13 +19,13 @@ A markdown-first programming model for building AI agents on Azure Functions wit
 Install directly from the release URL:
 
 ```bash
-pip install https://github.com/anthonychu/copilot-functions/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl
+pip install https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl
 ```
 
 ### From the GitHub repo
 
 ```bash
-pip install azure-functions-agents @ git+https://github.com/anthonychu/copilot-functions.git
+pip install azure-functions-agents @ git+https://github.com/anthonychu/azure-functions-agents.git
 ```
 
 ### With connector tools support
@@ -34,10 +34,10 @@ Connector tools (Teams, Office 365, SQL, Salesforce, etc.) require an optional e
 
 ```bash
 # From release URL
-pip install "azure-functions-agents[connectors] @ https://github.com/anthonychu/copilot-functions/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl"
+pip install "azure-functions-agents[connectors] @ https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl"
 
 # From repo
-pip install "azure-functions-agents[connectors] @ git+https://github.com/anthonychu/copilot-functions.git"
+pip install "azure-functions-agents[connectors] @ git+https://github.com/anthonychu/azure-functions-agents.git"
 ```
 
 ## GitHub Token
@@ -98,7 +98,7 @@ app = create_function_app()
 ### 4. Create `requirements.txt`
 
 ```
-https://github.com/anthonychu/copilot-functions/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl
+https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl
 ```
 
 Or use any other install method from the [Installation](#installation) section.
@@ -348,8 +348,8 @@ See the [`samples/`](samples/) directory for complete, deployable example apps.
 
 ```bash
 # Clone the repo
-git clone https://github.com/anthonychu/copilot-functions.git
-cd copilot-functions
+git clone https://github.com/anthonychu/azure-functions-agents.git
+cd azure-functions-agents
 
 # Install in development mode
 pip install -e ".[connectors]"

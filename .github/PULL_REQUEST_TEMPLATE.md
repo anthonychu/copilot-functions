@@ -26,8 +26,8 @@ What kind of change does this Pull Request introduce?
 *  Get the code
 
 ```
-git clone https://github.com/anthonychu/copilot-functions.git
-cd copilot-functions
+git clone https://github.com/anthonychu/azure-functions-agents.git
+cd azure-functions-agents
 git checkout [branch-name]
 pip install -e ".[connectors]"
 ```
