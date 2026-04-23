@@ -44,8 +44,9 @@ class ConnectionInfo:
 
 
 def is_v2_connection(connection_id: str) -> bool:
-    """Return True if the connection ID is a V2 (AI Gateway) connection."""
-    return "/aigateways/" in connection_id.lower()
+    """Return True if the connection ID is a V2 (gateway) connection."""
+    lower = connection_id.lower()
+    return "/aigateways/" in lower or "/connectorgateways/" in lower
 
 
 def _resolve_ref(ref: str, root: dict) -> dict:
@@ -338,11 +339,11 @@ def _parse_resource_id(resource_id: str) -> dict:
 
 
 def _parse_v2_resource_id(resource_id: str) -> dict:
-    """Extract subscription, resource group, gateway, and name from a V2 connection resource ID."""
+    """Extract subscription, resource group, gateway type, gateway, and name from a V2 connection resource ID."""
     pattern = (
         r"/subscriptions/(?P<subscription>[^/]+)"
         r"/resourceGroups/(?P<resource_group>[^/]+)"
-        r"/providers/Microsoft\.Web/aigateways/(?P<gateway>[^/]+)"
+        r"/providers/Microsoft\.Web/(?P<gateway_type>aigateways|connectorGateways)/(?P<gateway>[^/]+)"
         r"/connections/(?P<name>[^/]+)"
     )
     match = re.search(pattern, resource_id, re.IGNORECASE)
@@ -351,7 +352,10 @@ def _parse_v2_resource_id(resource_id: str) -> dict:
     return match.groupdict()
 
 
-_V2_API_VERSION = "2026-03-01-preview"
+_V2_API_VERSIONS = {
+    "aigateways": "2026-03-01-preview",
+    "connectorgateways": "2026-05-01-preview",
+}
 
 
 async def load_connection(
@@ -405,11 +409,13 @@ async def _load_v2_connection(
     arm: ArmClient, resource_id: str,
     *, data_plane_client: DataPlaneClient | None = None,
 ) -> ConnectionInfo:
-    """Load a V2 connection (Microsoft.Web/aigateways/connections)."""
+    """Load a V2 connection (Microsoft.Web/aigateways or connectorGateways)."""
     parts = _parse_v2_resource_id(resource_id)
+    gateway_type = parts["gateway_type"]
+    api_version = _V2_API_VERSIONS.get(gateway_type.lower(), "2026-05-01-preview")
 
     # Get connection metadata
-    conn_data = await arm.get(resource_id, api_version=_V2_API_VERSION)
+    conn_data = await arm.get(resource_id, api_version=api_version)
     props = conn_data.get("properties", {})
     api_name = props.get("connectorName", "")
     display_name = props.get("displayName", "")
@@ -420,9 +426,9 @@ async def _load_v2_connection(
     gateway_path = (
         f"/subscriptions/{parts['subscription']}"
         f"/resourceGroups/{parts['resource_group']}"
-        f"/providers/Microsoft.Web/aigateways/{parts['gateway']}"
+        f"/providers/Microsoft.Web/{gateway_type}/{parts['gateway']}"
     )
-    gateway_data = await arm.get(gateway_path, api_version=_V2_API_VERSION)
+    gateway_data = await arm.get(gateway_path, api_version=api_version)
     location = gateway_data.get("location", "")
 
     # Swagger uses the same managed API endpoint as V1
