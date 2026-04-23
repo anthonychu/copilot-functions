@@ -19,7 +19,7 @@ A markdown-first programming model for building AI agents on Azure Functions wit
 Install directly from the release URL:
 
 ```bash
-pip install https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl
+pip install https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.1/azure_functions_agents-0.7.1-py3-none-any.whl
 ```
 
 ### From the GitHub repo
@@ -34,7 +34,7 @@ Connector tools (Teams, Office 365, SQL, Salesforce, etc.) require an optional e
 
 ```bash
 # From release URL
-pip install "azure-functions-agents[connectors] @ https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl"
+pip install "azure-functions-agents[connectors] @ https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.1/azure_functions_agents-0.7.1-py3-none-any.whl"
 
 # From repo
 pip install "azure-functions-agents[connectors] @ git+https://github.com/anthonychu/azure-functions-agents.git"
@@ -98,7 +98,7 @@ app = create_function_app()
 ### 4. Create `requirements.txt`
 
 ```
-https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.0/azure_functions_agents-0.7.0-py3-none-any.whl
+https://github.com/anthonychu/azure-functions-agents/releases/download/v0.7.1/azure_functions_agents-0.7.1-py3-none-any.whl
 ```
 
 Or use any other install method from the [Installation](#installation) section.
@@ -357,7 +357,7 @@ pip install -e ".[connectors]"
 # Build a wheel
 pip install build
 python -m build --wheel
-# Output: dist/azure_functions_agents-0.7.0-py3-none-any.whl
+# Output: dist/azure_functions_agents-0.7.1-py3-none-any.whl
 ```
 
 ## Contributing
