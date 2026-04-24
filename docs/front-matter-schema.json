@@ -1,0 +1,584 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/anthonychu/azure-functions-agents/schemas/agent-front-matter.json",
+  "title": "Azure Functions Agent Front Matter",
+  "description": "Schema for .agent.md YAML front matter configuration",
+  "type": "object",
+  "required": ["name", "description"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Display name for the agent",
+      "minLength": 1,
+      "maxLength": 100,
+      "examples": ["Daily Azure Report", "Chat Assistant"]
+    },
+    "description": {
+      "type": "string",
+      "description": "Brief description of the agent's purpose",
+      "minLength": 1,
+      "maxLength": 500,
+      "examples": [
+        "Lists resources created or changed in the last 24 hours and emails a report",
+        "A helpful assistant with Python code execution capabilities"
+      ]
+    },
+    "trigger": {
+      "type": "object",
+      "description": "Defines how the agent is invoked",
+      "oneOf": [
+        {
+          "properties": {
+            "http": {
+              "$ref": "#/definitions/httpTrigger"
+            }
+          },
+          "required": ["http"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "timer": {
+              "$ref": "#/definitions/timerTrigger"
+            }
+          },
+          "required": ["timer"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "queue": {
+              "$ref": "#/definitions/queueTrigger"
+            }
+          },
+          "required": ["queue"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "blob": {
+              "$ref": "#/definitions/blobTrigger"
+            }
+          },
+          "required": ["blob"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "event_grid": {
+              "$ref": "#/definitions/eventGridTrigger"
+            }
+          },
+          "required": ["event_grid"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "service_bus": {
+              "$ref": "#/definitions/serviceBusTrigger"
+            }
+          },
+          "required": ["service_bus"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "execution_sandbox": {
+      "type": "object",
+      "description": "Configures Python code execution environment using Azure Container Apps dynamic sessions",
+      "required": ["session_pool_management_endpoint"],
+      "properties": {
+        "session_pool_management_endpoint": {
+          "type": "string",
+          "description": "ACA session pool endpoint (typically env var like $ACA_SESSION_POOL_ENDPOINT)",
+          "minLength": 1,
+          "examples": ["$ACA_SESSION_POOL_ENDPOINT", "https://my-pool.region.azurecontainerapps.io"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "tools_from_connections": {
+      "type": "array",
+      "description": "Loads connector-based tools from Azure Logic App connectors",
+      "items": {
+        "type": "object",
+        "required": ["connection_id"],
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "Connection resource ID (typically env var)",
+            "minLength": 1,
+            "examples": ["$O365_CONNECTION_ID", "$OUTLOOK_CONNECTION_ID"]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "response_example": {
+      "type": "string",
+      "description": "Example response structure for documentation and agent guidance",
+      "examples": [
+        "{\n  \"total_resources\": 42,\n  \"by_type\": {\"Microsoft.Web/sites\": 5}\n}"
+      ]
+    },
+    "response_schema": {
+      "type": "object",
+      "description": "JSON Schema for validating and structuring agent outputs",
+      "examples": [
+        {
+          "type": "object",
+          "required": ["total_resources"],
+          "properties": {
+            "total_resources": {
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    "input_schema": {
+      "type": "object",
+      "description": "JSON Schema for validating incoming HTTP requests (HTTP trigger only)",
+      "examples": [
+        {
+          "type": "object",
+          "required": ["subscription_id"],
+          "properties": {
+            "subscription_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]+$"
+            }
+          }
+        }
+      ]
+    },
+    "model": {
+      "description": "LLM to use for this agent. Overrides COPILOT_MODEL env var",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Model name",
+          "enum": [
+            "claude-sonnet-4",
+            "claude-sonnet-3.5",
+            "claude-opus-4",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o1",
+            "o1-mini",
+            "o3-mini"
+          ],
+          "examples": ["claude-sonnet-4", "gpt-4o"]
+        },
+        {
+          "type": "object",
+          "description": "Model configuration with parameters",
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Model name",
+              "examples": ["claude-sonnet-4", "gpt-4o"]
+            },
+            "temperature": {
+              "type": "number",
+              "description": "Temperature for response randomness (0.0 to 2.0)",
+              "minimum": 0,
+              "maximum": 2,
+              "default": 1.0
+            },
+            "max_tokens": {
+              "type": "integer",
+              "description": "Maximum tokens in response",
+              "minimum": 1,
+              "maximum": 100000,
+              "examples": [4000, 8000]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "timeout": {
+      "type": "number",
+      "description": "Maximum execution time in seconds. Overrides COPILOT_AGENT_TIMEOUT env var",
+      "minimum": 1,
+      "maximum": 1800,
+      "default": 900,
+      "examples": [60, 300, 600]
+    },
+    "tools": {
+      "type": "object",
+      "description": "Controls which tools are available to the agent",
+      "properties": {
+        "include": {
+          "type": "array",
+          "description": "Only load these specific tools",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [["azure_rest", "send_email"]]
+        },
+        "exclude": {
+          "type": "array",
+          "description": "Block these tools from being loaded",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [["web_fetch", "bash", "execute_shell"]]
+        },
+        "only_custom": {
+          "type": "boolean",
+          "description": "If true, only load custom tools from tools/ directory, no built-ins",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "mcp_servers": {
+      "description": "MCP servers to load for this agent",
+      "oneOf": [
+        {
+          "type": "array",
+          "description": "Reference MCP servers by name from mcp.json",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [["microsoft-learn", "azure-devops"]]
+        },
+        {
+          "type": "object",
+          "description": "Inline MCP server definitions",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/mcpLocalServer"
+              },
+              {
+                "$ref": "#/definitions/mcpRemoteServer"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "skills": {
+      "description": "Controls which skills from skills/ directory are loaded",
+      "oneOf": [
+        {
+          "type": "array",
+          "description": "Load only these specific skills",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [["azure-resources", "cost-optimization"]]
+        },
+        {
+          "type": "boolean",
+          "description": "Set to false to disable all skills",
+          "const": false
+        }
+      ]
+    },
+    "retry": {
+      "type": "object",
+      "description": "Configures automatic retry behavior for failed agent executions",
+      "required": ["max_attempts"],
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "description": "Maximum number of retry attempts",
+          "minimum": 1,
+          "maximum": 10,
+          "examples": [3, 5]
+        },
+        "backoff": {
+          "type": "string",
+          "description": "Retry backoff strategy",
+          "enum": ["linear", "exponential"],
+          "default": "exponential"
+        },
+        "retry_on": {
+          "type": "array",
+          "description": "Conditions to retry on",
+          "items": {
+            "type": "string",
+            "enum": ["timeout", "error", "rate_limit", "service_unavailable"]
+          },
+          "default": ["timeout", "error"]
+        },
+        "initial_delay": {
+          "type": "number",
+          "description": "Initial delay in seconds before first retry",
+          "minimum": 0,
+          "default": 1,
+          "examples": [1, 2, 5]
+        },
+        "max_delay": {
+          "type": "number",
+          "description": "Maximum delay in seconds between retries",
+          "minimum": 1,
+          "default": 60,
+          "examples": [30, 60, 120]
+        }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata for organization, discoverability, and governance",
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Semantic version of the agent",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.]+)?$",
+          "examples": ["1.0.0", "2.1.3-beta"]
+        },
+        "owner": {
+          "type": "string",
+          "description": "Team or individual responsible for the agent",
+          "examples": ["platform-team@company.com", "john-doe"]
+        },
+        "tags": {
+          "type": "array",
+          "description": "Categorization tags",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [["production", "cost-optimization", "azure"]]
+        },
+        "documentation_url": {
+          "type": "string",
+          "description": "URL to agent documentation",
+          "format": "uri",
+          "examples": ["https://wiki.company.com/agents/cost-optimizer"]
+        },
+        "support_contact": {
+          "type": "string",
+          "description": "Support contact information",
+          "examples": ["platform-team-slack", "support@company.com"]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "httpTrigger": {
+      "type": "object",
+      "description": "HTTP trigger configuration",
+      "properties": {
+        "route": {
+          "type": "string",
+          "description": "Custom route path (defaults to function name)",
+          "minLength": 1,
+          "examples": ["resource-summary", "api/chat"]
+        },
+        "methods": {
+          "type": "array",
+          "description": "Array of HTTP methods",
+          "items": {
+            "type": "string",
+            "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+          },
+          "default": ["GET", "POST"],
+          "examples": [["POST"], ["GET", "POST"]]
+        },
+        "auth_level": {
+          "type": "string",
+          "description": "Authorization level",
+          "enum": ["anonymous", "function", "admin"],
+          "default": "function"
+        }
+      },
+      "additionalProperties": false
+    },
+    "timerTrigger": {
+      "type": "object",
+      "description": "Timer trigger configuration",
+      "required": ["schedule"],
+      "properties": {
+        "schedule": {
+          "type": "string",
+          "description": "CRON expression (6-field format with seconds, or 5-field)",
+          "pattern": "^(\\*|([0-5]?[0-9])|([0-5]?[0-9]-[0-5]?[0-9])|([0-5]?[0-9]/[0-9]+)|([0-5]?[0-9](,[0-5]?[0-9])+))( (\\*|([0-5]?[0-9])|([0-5]?[0-9]-[0-5]?[0-9])|([0-5]?[0-9]/[0-9]+)|([0-5]?[0-9](,[0-5]?[0-9])+))){4,5}$",
+          "examples": ["0 0 7 * * *", "0 */5 * * * *", "0 9 * * *"]
+        },
+        "run_on_startup": {
+          "type": "boolean",
+          "description": "Run when the host starts",
+          "default": false
+        },
+        "use_monitor": {
+          "type": "boolean",
+          "description": "Monitor schedule for missed executions",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "queueTrigger": {
+      "type": "object",
+      "description": "Azure Storage Queue trigger configuration",
+      "required": ["name", "connection"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Queue name",
+          "minLength": 1,
+          "examples": ["my-queue", "process-items"]
+        },
+        "connection": {
+          "type": "string",
+          "description": "App setting name for connection string",
+          "minLength": 1,
+          "examples": ["$STORAGE_CONNECTION", "AzureWebJobsStorage"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "blobTrigger": {
+      "type": "object",
+      "description": "Azure Blob Storage trigger configuration",
+      "required": ["path", "connection"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Blob path pattern",
+          "minLength": 1,
+          "examples": ["my-container/{name}", "uploads/{name}.txt"]
+        },
+        "connection": {
+          "type": "string",
+          "description": "App setting name for connection string",
+          "minLength": 1,
+          "examples": ["$STORAGE_CONNECTION", "AzureWebJobsStorage"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "eventGridTrigger": {
+      "type": "object",
+      "description": "Event Grid trigger configuration",
+      "additionalProperties": false
+    },
+    "serviceBusTrigger": {
+      "type": "object",
+      "description": "Service Bus trigger configuration",
+      "properties": {
+        "queue_name": {
+          "type": "string",
+          "description": "Queue name (required if not using topic)",
+          "minLength": 1,
+          "examples": ["my-queue"]
+        },
+        "topic_name": {
+          "type": "string",
+          "description": "Topic name (required if using topic)",
+          "minLength": 1,
+          "examples": ["my-topic"]
+        },
+        "subscription_name": {
+          "type": "string",
+          "description": "Subscription name (required if using topic)",
+          "minLength": 1,
+          "examples": ["my-subscription"]
+        },
+        "connection": {
+          "type": "string",
+          "description": "App setting name for connection string",
+          "minLength": 1,
+          "examples": ["$SERVICE_BUS_CONNECTION"]
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["queue_name"]
+        },
+        {
+          "required": ["topic_name", "subscription_name"]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "mcpLocalServer": {
+      "type": "object",
+      "description": "Local MCP server configuration",
+      "required": ["command"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "local"
+        },
+        "command": {
+          "type": "string",
+          "description": "Command to execute",
+          "minLength": 1,
+          "examples": ["python", "node", "npx"]
+        },
+        "args": {
+          "type": "array",
+          "description": "Command arguments",
+          "items": {
+            "type": "string"
+          },
+          "examples": [["-m", "my_mcp_server"], ["mcp-server.js"]]
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment variables",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "description": "Tool filter (\"*\" for all)",
+          "items": {
+            "type": "string"
+          },
+          "default": ["*"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "mcpRemoteServer": {
+      "type": "object",
+      "description": "Remote MCP server configuration",
+      "required": ["url"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["http", "sse"]
+        },
+        "url": {
+          "type": "string",
+          "description": "MCP server URL",
+          "format": "uri",
+          "examples": ["https://api.example.com/mcp", "https://learn.microsoft.com/api/mcp"]
+        },
+        "headers": {
+          "type": "object",
+          "description": "HTTP headers",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "description": "Tool filter (\"*\" for all)",
+          "items": {
+            "type": "string"
+          },
+          "default": ["*"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
