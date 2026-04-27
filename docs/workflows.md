@@ -18,23 +18,66 @@ orchestrations of tool calls, sub-agents, and timers.
 
 ## Who this is for
 
-Dynamic workflows are a fit when an agent needs to run work that:
+Dynamic workflows are a fit when an agent needs to:
 
-- takes longer than a single chat turn (minutes to hours),
-- fans out across multiple independent tool calls that should run in
-  parallel,
-- must survive worker restarts, transient failures, and operator
-  intervention,
-- benefits from outside observability (an operator can list running work,
-  inspect per-task state, and cancel safely), or
-- coordinates multiple agents in the same app (M4+).
+- **process large datasets** where only an aggregate or summary should
+  reach the chat (e.g., scan 50 endpoints, summarize anomalies);
+- **run multi-step plans** (3+ dependent tool calls) where each model
+  round-trip would burn tokens and latency;
+- **fan out** independent work across many parallel tool calls;
+- **wait** on durable timers or external events without holding a worker
+  hot;
+- **survive** worker restarts or long pauses (minutes to hours);
+- **be observed and controlled** from outside the agent loop;
+- **coordinate multiple agents** in the same app (M4+).
 
 They are **not** the right tool for:
 
-- work that fits comfortably inside a single chat turn,
-- hand-authored orchestration DSLs (plans are LLM-authored only —
-  there is no YAML/markdown workflow template format),
-- cross-app coordination (M1 workflows live inside a single Functions app).
+- work that fits comfortably inside a single chat turn — the
+  orchestration overhead would dominate;
+- tools that need an immediate user response (the workflow tool returns
+  immediately with an ID; the *result* is fetched on a later turn);
+- hand-authored orchestration DSLs — plans are LLM-authored only, by
+  design, so there is no YAML/markdown workflow template format;
+- cross-app coordination (M1 workflows live inside a single Functions
+  app).
+
+## Why workflows (token, latency, context)
+
+Dynamic workflows give an agent the same benefits that motivate
+[programmatic tool calling][ptc] in other LLM platforms — the LLM authors
+a *plan that calls tools* rather than calling them one-by-one through chat
+round-trips — and add durability, observability, and cooperative control
+on top.
+
+Three concrete wins versus chaining tool calls in conversation:
+
+- **Lower token cost.** Intermediate task results stay inside the
+  orchestration. The agent sees only the final completion envelope (or a
+  summary task you wired in), not every fan-out result. Anthropic
+  [reports][ptc] roughly a 10× reduction on multi-tool workflows; the
+  shape of the saving is the same here.
+- **Lower latency.** Each direct tool call is a round-trip through the
+  model. A 20-step plan is one model turn to author the workflow, not 20.
+  The orchestrator drives the fan-out and sequencing in pure
+  infrastructure.
+- **Context-window discipline.** Hundreds of kilobytes of intermediate
+  data — log lines, line items, search hits — never reach the model's
+  context. The agent reasons over the *summary*, which is what it would
+  have produced anyway after seeing the raw data.
+
+…and three more that PTC's container-based model can't offer:
+
+- **Survives worker restarts and long sleeps.** Workflows that take hours
+  or days are first-class — no client connection has to stay open.
+- **Operable from outside the agent loop.** `list_workflows`,
+  `get_workflow_status`, `cancel_workflow`, and (in M2+) the DTS portal
+  give operators a way to see and steer in-flight work without going
+  through the chat session.
+- **Multi-agent coordination (M4).** Sub-agent tasks run as durable
+  sub-orchestrations with isolated sessions, observable end-to-end.
+
+[ptc]: https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling
 
 ## How it works
 
@@ -54,6 +97,14 @@ They are **not** the right tool for:
    while the session is visible, renders a live per-node progress view, and
    replaces it with the final envelope when the workflow terminates. The
    user sees the result land in the chat with no action required.
+
+> [!NOTE]
+> **Intermediate task results never enter the agent's context window.**
+> The agent receives the `workflow_id` immediately and, on a later turn,
+> the final completion envelope. Per-node results are accessible
+> programmatically via `get_workflow_status` if the agent wants them, but
+> the default path is "summary only." This is the same context-window
+> discipline that makes [programmatic tool calling][ptc] cheap.
 
 The design is intentionally aligned with the
 [MCP Tasks SEP-2557 proposal](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2557);

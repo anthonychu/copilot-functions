@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Set
 import azure.durable_functions as df
 import azure.functions as func
 
+from . import registry
 from .schema import (
     ECHO_TOOL_NAME,
     MAX_PARALLELISM,
@@ -51,11 +52,25 @@ log = logging.getLogger(__name__)
 
 
 def _run_echo(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Trivial workflow-safe tool used to prove activity dispatch."""
+    """Trivial workflow-safe tool used by unit tests.
+
+    Registered as ``public=False`` — it stays available for tests but
+    is not included in the default allowlist handed to agents, so a
+    workflow-enabled agent can't reach for ``__echo`` by accident.
+    """
     return {"echoed": args}
 
 
-_DISPATCH: Dict[str, Any] = {ECHO_TOOL_NAME: _run_echo}
+# Registered exactly once at module import. Reserved-name and async
+# guards live in registry.register_workflow_tool.
+if registry.get_entry(ECHO_TOOL_NAME) is None:
+    registry.register_workflow_tool(
+        ECHO_TOOL_NAME,
+        "Internal echo tool used by the workflow unit tests. "
+        "Returns its args under an 'echoed' key.",
+        _run_echo,
+        public=False,
+    )
 
 
 def _wait_deadline(context: df.DurableOrchestrationContext, task: Dict[str, Any]):
@@ -96,11 +111,11 @@ def register_workflows(app: func.FunctionApp) -> None:
         task_id = task["id"]
         tool_name = task["tool"]
         args = task.get("args") or {}
-        handler = _DISPATCH.get(tool_name)
+        handler = registry.get_handler(tool_name)
         if handler is None:
             raise ValueError(
                 f"task {task_id!r}: tool {tool_name!r} is not registered "
-                "in the workflow-safe dispatch table"
+                "in the workflow-safe tool registry"
             )
         log.info("workflow activity running: id=%s tool=%s", task_id, tool_name)
         result = handler(args)

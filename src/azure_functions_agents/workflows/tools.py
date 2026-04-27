@@ -27,6 +27,7 @@ from copilot import define_tool
 from copilot.tools import ToolInvocation
 from pydantic import BaseModel, Field
 
+from . import registry
 from .context import (
     get_workflow_session,
     new_workflow_instance_id,
@@ -51,8 +52,10 @@ class _TaskSpec(BaseModel):
         default=None,
         description=(
             "Required for type='tool'. Name of a workflow-safe tool to invoke. "
-            "The list of allowed tool names is restricted — an unknown name causes "
-            "the plan to be rejected. Must be omitted for type='wait'."
+            "The set of allowed tool names is configured per-agent and listed "
+            "in the system prompt under 'Available workflow tools'; an unknown "
+            "or disallowed name causes the plan to be rejected. Must be omitted "
+            "for type='wait'."
         ),
     )
     args: Dict[str, Any] = Field(
@@ -244,8 +247,18 @@ async def start_workflow(params: StartWorkflowParams, invocation: ToolInvocation
     if session is None:
         return _error(_NO_CLIENT_MESSAGE)
 
+    allowed_tools = registry.get_app_config()
+    if allowed_tools is None:
+        # Should be unreachable: build_workflow_integration sets the
+        # allowlist whenever workflows are enabled, and start_workflow
+        # is only registered as a tool in that case. Surface explicitly
+        # rather than passing None into validate_plan.
+        return _error(
+            "workflow tools are registered but the per-app allowlist was "
+            "never configured (build_workflow_integration was not called)"
+        )
     try:
-        plan = validate_plan(params.model_dump())
+        plan = validate_plan(params.model_dump(), allowed_tools=allowed_tools)
     except PlanValidationError as exc:
         return _error(str(exc))
 

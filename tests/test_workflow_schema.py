@@ -28,8 +28,18 @@ from azure_functions_agents.workflows.schema import (
     parse_iso8601_duration,
     plan_to_activity_inputs,
     resolve_template_value,
-    validate_plan,
 )
+from azure_functions_agents.workflows.schema import validate_plan as _validate_plan
+
+
+# Schema tests use the internal echo tool; the production allowlist is
+# computed at app start by ``build_workflow_integration``. Wrap once so
+# every call site stays terse.
+_TEST_ALLOWLIST = frozenset({ECHO_TOOL_NAME})
+
+
+def validate_plan(raw, *, allowed_tools=_TEST_ALLOWLIST):
+    return _validate_plan(raw, allowed_tools=allowed_tools)
 
 
 def _task(tid, depends_on=None, args=None, tool=ECHO_TOOL_NAME, type_="tool"):

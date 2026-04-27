@@ -1,11 +1,18 @@
 """Workflow incident-triage sample app.
 
-M1 step 2b: the agent itself drives workflows through the injected
-``start_workflow`` / ``get_workflow_status`` tools. The framework reads
-``workflows.enabled: true`` from ``main.agent.md`` and handles all the
-wiring — this file just builds the app.
+M1 step 3c: registers the four sample-specific workflow-safe tools
+(``fetch_logs``, ``fetch_metrics``, ``fetch_deploys``,
+``summarize_findings``) with the workflows engine before the agent app
+is built. Once ``create_function_app()`` runs, it sees
+``workflows.enabled: true`` plus the ``workflows.allowed_tools`` list in
+``main.agent.md`` and wires the tools into the agent's plan validator
+and system prompt.
 """
 
-from azure_functions_agents import create_function_app
+from incident_tools import register_with_engine
+
+register_with_engine()
+
+from azure_functions_agents import create_function_app  # noqa: E402
 
 app = create_function_app()

@@ -1,11 +1,9 @@
 # Workflow Incident Triage (work in progress)
 
-Sample app for the upcoming **dynamic workflows** feature. The agent persona is
-scaffolded but `workflows.enabled` is intentionally commented out in
-`main.agent.md` until the agent-tool wiring lands in M1 step 2b. This
-directory currently hosts the **2a walking-skeleton engine**, exercised
-through a pair of throwaway HTTP endpoints that will be removed when the
-agent-facing tools take over.
+Sample app for the upcoming **dynamic workflows** feature. The agent
+investigates production incidents by fanning out evidence-gathering
+tools, optionally waiting for in-flight signal to settle, and
+correlating the results into a structured incident report.
 
 See the [dynamic workflows reference](../../docs/workflows.md) for the full
 feature design.
@@ -14,16 +12,19 @@ Tracked by [issue #2](https://github.com/anthonychu/azure-functions-agents/issue
 
 | Trigger | Custom Tools | Connectors | MCP Servers | Skills | Sandbox | Chat UI |
 |---|---|---|---|---|---|---|
-| HTTP | | | | | | ✅ |
+| HTTP | ✅ (workflow-safe) | | | | | ✅ |
 
 ## Status
 
 - [x] M1 step 0 — Durable extension reachability smoke test *(removed in 2a)*
 - [x] M1 step 1 — `docs/workflows.md` + sample scaffold
 - [x] M1 step 2a — walking-skeleton engine (linear chain via throwaway HTTP harness)
-- [x] M1 step 2b — agent tools + system-prompt addendum *(this file)*
-- [ ] M1 step 2c — completion delivery + live-progress chat UI
-- [ ] M1 step 3+ — primitives (fan-out, timer, cancel, allowlist)
+- [x] M1 step 2b — agent tools + system-prompt addendum
+- [x] M1 step 2c — completion delivery + live-progress chat UI
+- [x] M1 step 3a/3b — fan-out, templating, durable timers, cooperative cancel
+- [x] M1 step 3c — sample evidence tools + `workflows.allowed_tools` *(this file)*
+- [ ] M1 step 4 — additional plan-parser tests
+- [ ] M1 step 5 — demo dry-run
 
 ## Run locally
 
@@ -37,45 +38,57 @@ agent) and Azurite (used by Durable Functions' default Azure Storage backend).
 > Python worker from whatever interpreter is on `PATH`; if the venv isn't
 > active, the worker will miss `azure-functions-durable` and fail indexing.
 
-### Driving workflows from chat (step 2b)
+## Workflow-safe tools registered by this sample
 
-`workflows.enabled: true` is set in `main.agent.md`, so the framework
-injects two tools into the agent's tool schema and appends a short
-engine-owned addendum to its system prompt:
+`function_app.py` registers four synthetic-but-realistic tools with the
+workflows engine before `create_function_app()` runs. The agent's
+`main.agent.md` allow-lists exactly these four, so they are the only
+tools the LLM may put on a workflow node:
 
-- `start_workflow({tasks: [...]})` — validates and launches a workflow,
-  returns `{workflow_id}` immediately.
-- `get_workflow_status({workflow_id})` — returns the status envelope.
+| Tool | Args | Result shape |
+|---|---|---|
+| `fetch_logs` | `{service, window_minutes?: int = 30}` | `{service, window_minutes, lines: [str], errors, warnings}` |
+| `fetch_metrics` | `{service, window_minutes?: int = 30}` | `{service, window_minutes, cpu_p99, memory_p99, latency_p99_ms, saturation}` |
+| `fetch_deploys` | `{service, lookback_hours?: int = 24}` | `{service, lookback_hours, deploys: [{id, actor, summary, minutes_ago}]}` |
+| `summarize_findings` | `{logs, metrics, deploys, service?}` (consume whole `${node.result}` values) | `{service, likely_cause, confidence: 'low'\|'medium'\|'high', evidence: [str], recommended_action}` |
 
-Open the chat UI at <http://localhost:7071/> and ask the agent something
-that justifies background work. At this milestone only the `__echo`
-tool is workflow-safe (real workflow-safe tools land when step 3
-introduces the allowlist), so a useful demo prompt is:
+Outputs are deterministic functions of inputs so the demo narrative is
+reproducible across runs and replays. The summary tool deliberately
+consumes the whole upstream result via `${node.result}` — there is no
+need (and no benefit) to drill into nested paths from the plan.
 
-> Start a two-step workflow that uses the `__echo` tool to echo `{"msg": "hello"}`
-> and then `{"msg": "world"}`. Return the workflow id, then wait a moment and
-> check its status.
+## Demo prompt
 
-You should see tool-call bubbles for `start_workflow` and, on a
-subsequent turn, `get_workflow_status` returning a `Completed` envelope
-with both echoed results. Live-progress polling lands in step 2c.
+Open the chat UI at <http://localhost:7071/> and paste:
 
-## What this sample will demonstrate (when complete)
+> *"We're seeing latency spikes and intermittent 502s on the `orders-api`
+> service for the last 20 minutes. Pull recent logs, metrics, and the deploy
+> history in parallel; let in-flight work drain for 30 seconds; then
+> summarize what you find."*
 
-Open the chat UI (`http://localhost:7071/`) and say something like:
+The agent should:
 
-> *"We're seeing latency spikes in the ordering service. Pull recent logs,
-> metrics, and the deploy history, give it 30 seconds for in-flight data to
-> settle, then summarize what you find and tell me when you're done."*
+1. Author a five-task workflow: three parallel fetches against `orders-api`,
+   a `wait` task with `duration: PT30S` that depends on all three, and a
+   final `summarize_findings` task that depends on the wait and consumes
+   the three fetch results via `${...result}` templates.
+2. Call `start_workflow`, return the `workflow_id` to the chat, and let the
+   built-in live-progress card take over.
+3. Within ~35 seconds, the workflow should reach `Completed` and the card
+   should expose the structured summary (likely cause, confidence,
+   evidence, recommended action).
 
-The agent will:
+If you want to see cooperative cancellation, ask "actually cancel that"
+while the workflow is mid-wait — the agent will call `cancel_workflow`,
+the orchestration unwinds at the next wave boundary, and the live card
+flips to `Canceled` with whatever partial results were already gathered.
 
-1. Produce a fan-out DAG (parallel log/metric/deploy fetches → 30s durable
-   timer → summarize).
-2. Call `start_workflow` and return a workflow ID to the chat.
-3. Tell you the result will appear automatically when the workflow finishes.
-4. The chat UI's background poll renders a live per-node progress view and
-   replaces it with the final report when the workflow completes — typically
-   under a minute.
+## What's still mocked
 
-Same demo works through the MCP server and through the existing HTTP API.
+The four workflow-safe tools synthesize their evidence from a
+deterministic hash of the args — there is no real log / metric /
+deploy backend behind them yet. That is deliberate: we want the sample
+to exercise every M1 workflow primitive end-to-end without dragging in
+external service dependencies. A future milestone (or a fork of this
+sample) can swap the handlers for real backends without touching the
+agent persona, the workflow plan shape, or the engine.

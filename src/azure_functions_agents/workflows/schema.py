@@ -66,7 +66,6 @@ class WorkflowPlan(BaseModel):
 
 
 ECHO_TOOL_NAME: str = "__echo"
-ALLOWED_TOOL_NAMES: frozenset[str] = frozenset({ECHO_TOOL_NAME})
 
 # Hard caps. M1 defaults; configurable from frontmatter lands in M5.
 MAX_NODES: int = 50
@@ -90,12 +89,23 @@ _TEMPLATE_LIKE_RE = re.compile(r"\$\{[^}]*\}")
 _TEMPLATE_UNCLOSED_RE = re.compile(r"\$\{[^}]*\Z")
 
 
-def validate_plan(raw: Dict[str, Any]) -> WorkflowPlan:
+def validate_plan(
+    raw: Dict[str, Any],
+    *,
+    allowed_tools: Set[str],
+) -> WorkflowPlan:
     """Validate and normalize a plan dict.
+
+    ``allowed_tools`` is the set of tool names admitted as ``type=tool``
+    node targets. In production this is computed by
+    :func:`build_workflow_integration` from the agent's frontmatter and
+    the registry. There is no fallback — the validator never invents
+    its own allowlist.
 
     Raises :class:`PlanValidationError` with a caller-friendly message on
     any structural or semantic problem.
     """
+    effective_allowed = frozenset(allowed_tools)
     try:
         plan = WorkflowPlan.model_validate(raw)
     except ValidationError as exc:
@@ -126,10 +136,10 @@ def validate_plan(raw: Dict[str, Any]) -> WorkflowPlan:
                     f"task {task.id!r}: 'tool' field is required for "
                     "type=tool tasks"
                 )
-            if task.tool not in ALLOWED_TOOL_NAMES:
+            if task.tool not in effective_allowed:
                 raise PlanValidationError(
                     f"task {task.id!r}: tool {task.tool!r} is not workflow-safe. "
-                    f"Allowed tools at this milestone: {sorted(ALLOWED_TOOL_NAMES)}"
+                    f"Allowed tools: {sorted(effective_allowed)}"
                 )
             if task.duration is not None or task.until is not None:
                 raise PlanValidationError(
@@ -569,7 +579,6 @@ def parse_iso8601_datetime(text: str) -> datetime:
 
 
 __all__ = [
-    "ALLOWED_TOOL_NAMES",
     "ECHO_TOOL_NAME",
     "MAX_NODES",
     "MAX_PARALLELISM",
