@@ -35,7 +35,8 @@ log = logging.getLogger(__name__)
 WORKFLOW_SYSTEM_ADDENDUM = (
     "\n\n"
     "## Long-running work: workflows\n\n"
-    "You have access to workflow tools (`start_workflow`, `get_workflow_status`). "
+    "You have access to workflow tools (`start_workflow`, `get_workflow_status`, "
+    "`list_workflows`, `cancel_workflow`, `terminate_workflow`). "
     "Prefer starting a workflow when the user's request involves work that:\n"
     "- would take longer than a single chat turn, or\n"
     "- has steps that can run in parallel and you want them to, or\n"
@@ -43,7 +44,9 @@ WORKFLOW_SYSTEM_ADDENDUM = (
     "Workflows run in the background. After starting one, return the workflow ID "
     "to the user so they know work is in flight, then call `get_workflow_status` "
     "to check progress — do not rely on results being pushed to the conversation "
-    "automatically at this time. For short, latency-sensitive work that fits "
+    "automatically at this time. If the user changes their mind, prefer "
+    "`cancel_workflow` (cooperative; preserves partial results) over "
+    "`terminate_workflow` (abrupt). For short, latency-sensitive work that fits "
     "comfortably in a single turn, keep using direct tool calls — workflows add "
     "overhead."
 )

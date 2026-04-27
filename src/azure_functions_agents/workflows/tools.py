@@ -32,7 +32,7 @@ from .context import (
     new_workflow_instance_id,
     session_owns_workflow,
 )
-from .engine import ORCHESTRATOR_NAME
+from .engine import CANCEL_EVENT_NAME, ORCHESTRATOR_NAME
 from .schema import PlanValidationError, plan_to_activity_inputs, validate_plan
 
 log = logging.getLogger(__name__)
@@ -43,25 +43,49 @@ class _TaskSpec(BaseModel):
     type: str = Field(
         default="tool",
         description=(
-            "Task type. Only 'tool' is supported at this milestone; 'wait' and sub-agent "
-            "tasks land in later milestones."
+            "Task type. 'tool' invokes a workflow-safe tool; 'wait' pauses the "
+            "workflow until a deadline (use the 'duration' or 'until' field)."
         ),
     )
-    tool: str = Field(
+    tool: Optional[str] = Field(
+        default=None,
         description=(
-            "Name of a workflow-safe tool to invoke. The list of allowed tool names is "
-            "restricted — an unknown name causes the plan to be rejected."
-        )
+            "Required for type='tool'. Name of a workflow-safe tool to invoke. "
+            "The list of allowed tool names is restricted — an unknown name causes "
+            "the plan to be rejected. Must be omitted for type='wait'."
+        ),
     )
     args: Dict[str, Any] = Field(
-        default_factory=dict, description="JSON-serializable arguments passed to the tool."
+        default_factory=dict,
+        description=(
+            "JSON-serializable arguments passed to the tool (type='tool' only)."
+        ),
     )
     depends_on: List[str] = Field(
         default_factory=list,
         description=(
-            "IDs of tasks that must complete before this one. At the current milestone, "
-            "plans must be a linear chain (each task depends on at most its immediate "
-            "predecessor); fan-out support lands in a later step."
+            "IDs of upstream tasks that must complete before this one. Tasks form an "
+            "arbitrary DAG: tasks with disjoint depends_on chains run in parallel; "
+            "multiple roots are allowed. Cycles, unknown task references, and "
+            "self-references are rejected at validation time."
+        ),
+    )
+    duration: Optional[str] = Field(
+        default=None,
+        description=(
+            "Required for type='wait' (and only valid then) when scheduling a "
+            "relative pause. ISO-8601 duration in the PnDTnHnMnS subset, e.g. "
+            "'PT30S' (30 seconds), 'PT5M' (5 minutes), 'PT1H30M', or 'P1D'. "
+            "Capped at 24 hours."
+        ),
+    )
+    until: Optional[str] = Field(
+        default=None,
+        description=(
+            "Alternative to 'duration' for type='wait' tasks: schedule a pause "
+            "that ends at an absolute moment in time. ISO-8601 datetime with an "
+            "explicit timezone, e.g. '2026-04-25T17:30:00Z' or "
+            "'2026-04-25T10:30:00-07:00'."
         ),
     )
 
@@ -69,8 +93,11 @@ class _TaskSpec(BaseModel):
 class StartWorkflowParams(BaseModel):
     tasks: List[_TaskSpec] = Field(
         description=(
-            "Ordered list of tasks making up the workflow plan. Linear chains only at "
-            "this milestone."
+            "Tasks making up the workflow plan. Tasks form a DAG via their depends_on "
+            "edges; tasks whose dependencies are all satisfied run in parallel. Argument "
+            "values may reference upstream task results using ${node_id.result} or "
+            "${node_id.result.path.to.field} — the ref must point to a transitive "
+            "predecessor, otherwise the plan is rejected."
         ),
         min_length=1,
     )
@@ -96,16 +123,43 @@ class TerminateWorkflowParams(BaseModel):
     )
 
 
+class CancelWorkflowParams(BaseModel):
+    workflow_id: str = Field(
+        description="Workflow ID returned by a prior call to start_workflow."
+    )
+    reason: str = Field(
+        default="canceled by agent",
+        description=(
+            "Short human-readable reason delivered to the orchestrator as the "
+            "cancel event payload."
+        ),
+    )
+
+
 def status_envelope(status: Any) -> dict:
-    """Normalize a Durable instance status into the tool-facing envelope."""
+    """Normalize a Durable instance status into the tool-facing envelope.
+
+    Translates a successfully-returned cooperative-cancel output into
+    ``runtime_status="Canceled"`` so callers (LLM tools, UI cards, drain
+    endpoint) can distinguish cooperative cancel from clean success
+    without inspecting the output payload. Hard ``terminate`` is left as
+    Durable's native ``Terminated`` status.
+    """
     if status is None:
         return {"workflow_id": None, "runtime_status": "not_found"}
     runtime_status = getattr(status.runtime_status, "name", str(status.runtime_status))
+    output = status.output
+    if (
+        runtime_status == "Completed"
+        and isinstance(output, dict)
+        and output.get("canceled") is True
+    ):
+        runtime_status = "Canceled"
     return {
         "workflow_id": status.instance_id,
         "runtime_status": runtime_status,
         "custom_status": status.custom_status,
-        "output": status.output,
+        "output": output,
         "created_time": status.created_time.isoformat() if status.created_time else None,
         "last_updated_time": (
             status.last_updated_time.isoformat() if status.last_updated_time else None
@@ -175,10 +229,14 @@ _NOT_FOUND_ERROR_STATUS = 404
         "background orchestration; this tool returns as soon as the workflow is "
         "scheduled, so the conversation can continue. Use it when the work needs to "
         "survive across chat turns, when you want steps to run in parallel, or when "
-        "the total work would exceed a typical tool-call budget. The `tasks` input is "
-        "an ordered list; at this milestone tasks must form a linear chain (each task "
-        "depends on at most its immediate predecessor). Returns {workflow_id} on "
-        "success; call get_workflow_status with that ID to check progress."
+        "the total work would exceed a typical tool-call budget. Tasks form a DAG: "
+        "use depends_on to express dependencies; tasks whose dependencies are all "
+        "satisfied run concurrently. Two task types are supported: 'tool' (invokes "
+        "a workflow-safe tool) and 'wait' (durable timer using 'duration' or "
+        "'until'). Argument values may reference prior task results via "
+        "${node_id.result} or ${node_id.result.path}. Returns {workflow_id} on "
+        "success; call get_workflow_status to check progress, cancel_workflow to "
+        "stop cooperatively, or terminate_workflow to stop abruptly."
     )
 )
 async def start_workflow(params: StartWorkflowParams, invocation: ToolInvocation) -> str:
@@ -325,17 +383,68 @@ async def terminate_workflow(
     return json.dumps({"workflow_id": params.workflow_id, "terminated": True})
 
 
+@define_tool(
+    description=(
+        "Cooperatively cancel a running workflow. Unlike terminate_workflow, "
+        "cancel signals the orchestrator via an event and lets it return a clean "
+        "result (status will be 'Canceled' with the partial results so far). "
+        "Cancel takes effect at the next wave boundary, so a long-running "
+        "individual task may still complete before cancellation is observed. "
+        "Prefer cancel over terminate when the user changes their mind and "
+        "partial output is useful. Only workflows started by the same agent "
+        "session can be canceled."
+    )
+)
+async def cancel_workflow(
+    params: CancelWorkflowParams, invocation: ToolInvocation
+) -> str:
+    session = get_workflow_session(invocation.session_id)
+    if session is None:
+        return _error(_NO_CLIENT_MESSAGE)
+
+    if not session_owns_workflow(session.session_id, params.workflow_id):
+        return _error(
+            f"workflow {params.workflow_id!r} not found",
+            status=_NOT_FOUND_ERROR_STATUS,
+        )
+
+    try:
+        await session.durable_client.raise_event(
+            params.workflow_id, CANCEL_EVENT_NAME, params.reason
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("cancel_workflow: client.raise_event failed")
+        return _error(f"failed to cancel workflow: {exc}")
+
+    log.info(
+        "workflow cancel requested: id=%s reason=%r",
+        params.workflow_id,
+        params.reason,
+    )
+    return json.dumps(
+        {"workflow_id": params.workflow_id, "cancel_requested": True}
+    )
+
+
 def build_workflow_tools() -> list:
     """Return the list of workflow tool objects to inject for an agent."""
-    return [start_workflow, get_workflow_status, list_workflows, terminate_workflow]
+    return [
+        start_workflow,
+        get_workflow_status,
+        list_workflows,
+        cancel_workflow,
+        terminate_workflow,
+    ]
 
 
 __all__ = [
+    "CancelWorkflowParams",
     "GetWorkflowStatusParams",
     "ListWorkflowsParams",
     "StartWorkflowParams",
     "TerminateWorkflowParams",
     "build_workflow_tools",
+    "cancel_workflow",
     "fetch_session_workflow_status",
     "fetch_session_workflows",
     "get_workflow_status",
