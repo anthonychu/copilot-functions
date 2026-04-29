@@ -237,9 +237,13 @@ _NOT_FOUND_ERROR_STATUS = 404
         "satisfied run concurrently. Two task types are supported: 'tool' (invokes "
         "a workflow-safe tool) and 'wait' (durable timer using 'duration' or "
         "'until'). Argument values may reference prior task results via "
-        "${node_id.result} or ${node_id.result.path}. Returns {workflow_id} on "
-        "success; call get_workflow_status to check progress, cancel_workflow to "
-        "stop cooperatively, or terminate_workflow to stop abruptly."
+        "${node_id.result} or ${node_id.result.path}. Returns {workflow_id} "
+        "immediately. **This tool is fire-and-forget**: the workflow runs in the "
+        "background and its progress and final result are surfaced to the user by "
+        "the chat client, not pushed back to you. After receiving the workflow_id, "
+        "end your turn promptly — do not poll get_workflow_status. Use "
+        "cancel_workflow to stop cooperatively, or terminate_workflow to stop "
+        "abruptly, only if the user asks."
     )
 )
 async def start_workflow(params: StartWorkflowParams, invocation: ToolInvocation) -> str:
@@ -295,12 +299,17 @@ async def start_workflow(params: StartWorkflowParams, invocation: ToolInvocation
 
 @define_tool(
     description=(
-        "Return the current status of a previously-started workflow. Poll this to "
-        "learn when a workflow has completed and to read its output. The returned "
-        "envelope includes runtime_status (one of: Running, Completed, Failed, "
-        "Terminated, Canceled, Pending), an optional short custom_status string with "
-        "progress, and — once the workflow reaches a terminal state — the output. "
-        "Only workflows started by the same agent session are visible."
+        "Return the current status of a previously-started workflow. **Call this "
+        "only when the user explicitly asks** about a workflow's progress or "
+        "result (for example, 'what did the incident workflow find?' or 'is X "
+        "still running?'). Do not call this on your own initiative after "
+        "start_workflow — workflow progress and final output are surfaced to the "
+        "user by the chat client; polling here wastes turns and adds nothing the "
+        "user can't already see. The returned envelope includes runtime_status "
+        "(one of: Running, Completed, Failed, Terminated, Canceled, Pending), an "
+        "optional short custom_status string with progress, and — once the "
+        "workflow reaches a terminal state — the output. Only workflows started "
+        "by the same agent session are visible."
     )
 )
 async def get_workflow_status(
@@ -340,8 +349,11 @@ async def get_workflow_status(
         "status envelopes, newest first, in the same shape as "
         "get_workflow_status. Includes active workflows regardless of age "
         "and terminal workflows that have not yet been purged from Durable "
-        "history. Use this to find workflow IDs if you have lost track of "
-        "them or to check on multiple concurrent workflows."
+        "history. **Call this only when the user explicitly asks** about "
+        "their workflows (for example, 'what workflows are still running?' "
+        "or 'do you have any workflow IDs from earlier?'). Do not call this "
+        "to check on workflows you started yourself — the chat client "
+        "surfaces in-flight workflows to the user without your assistance."
     )
 )
 async def list_workflows(

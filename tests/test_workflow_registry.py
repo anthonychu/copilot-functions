@@ -234,3 +234,36 @@ def test_addendum_includes_per_tool_descriptions():
     assert "### Available workflow tools" in addendum
     assert "`demo_evidence_tool`" in addendum
     assert "Sample tool for the addendum-rendering test." in addendum
+
+
+def test_addendum_enforces_fire_and_forget_no_poll_guidance():
+    """Regression guard: the addendum, the start_workflow tool description,
+    and the get_workflow_status tool description must all instruct the LLM
+    to NOT poll after start_workflow. The chat UI is the result channel.
+    A previous version of these prompts told the agent to poll, which kept
+    the agent's turn alive and (a) burned tokens and (b) blocked the chat
+    input box from re-enabling — surfacing as the demo bug that motivated
+    this guard.
+    """
+    registry.register_workflow_tool(
+        "demo_evidence_tool",
+        "Sample tool for the no-poll regression test.",
+        _noop,
+    )
+    tools, addendum = integration.build_workflow_integration(
+        _FakeApp(), _enable_metadata(allowed=["demo_evidence_tool"])
+    )
+    # Addendum contract: explicit fire-and-forget framing + explicit
+    # negative on get_workflow_status auto-polling.
+    assert "fire-and-forget" in addendum
+    assert "end your turn" in addendum
+    assert "do not call `get_workflow_status` to wait" in addendum
+    # Tool descriptions must not encourage polling either, otherwise the
+    # tool-call contract overrides the addendum.
+    descriptions = {tool.name: tool.description for tool in tools}
+    assert "fire-and-forget" in descriptions["start_workflow"]
+    assert "do not poll get_workflow_status" in descriptions["start_workflow"]
+    assert "only when the user explicitly asks" in descriptions["get_workflow_status"]
+    # Negative checks: the prior wording must not creep back in.
+    assert "Poll this" not in descriptions["get_workflow_status"]
+    assert "call get_workflow_status to check progress" not in descriptions["start_workflow"]

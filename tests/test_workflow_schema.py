@@ -622,3 +622,155 @@ def test_accepts_past_until_value():
     # for clock skew between authoring and execution; benign as-is.
     plan = validate_plan(_plan(_wait("pause", until="2000-01-01T00:00:00Z")))
     assert plan.tasks[0].until == "2000-01-01T00:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# additional DAG / cycle edge cases (M1 step 4)
+# ---------------------------------------------------------------------------
+
+
+def test_detects_four_node_cycle():
+    """Cycle detection must walk longer back-edges, not just two/three hops."""
+    raw = _plan(
+        _task("a", depends_on=["d"]),
+        _task("b", depends_on=["a"]),
+        _task("c", depends_on=["b"]),
+        _task("d", depends_on=["c"]),
+    )
+    with pytest.raises(PlanValidationError, match="cycle"):
+        validate_plan(raw)
+
+
+def test_detects_cycle_reachable_from_acyclic_prefix():
+    """A forward chain feeding into a cycle still fails — the cycle must
+    be reported even though some nodes are reachable from a clean root.
+    """
+    raw = _plan(
+        _task("root"),
+        _task("a", depends_on=["root", "c"]),
+        _task("b", depends_on=["a"]),
+        _task("c", depends_on=["b"]),
+    )
+    with pytest.raises(PlanValidationError, match="cycle"):
+        validate_plan(raw)
+
+
+def test_detects_cycle_with_no_roots():
+    """If every node has an incoming edge (no roots), validation must
+    still surface the underlying cycle — not crash, not loop forever.
+    """
+    raw = _plan(
+        _task("a", depends_on=["b"]),
+        _task("b", depends_on=["a"]),
+    )
+    with pytest.raises(PlanValidationError, match="cycle"):
+        validate_plan(raw)
+
+
+def test_accepts_diamond_dag_with_cross_edges():
+    """Classic diamond: A -> {B, C} -> D. Both branches must validate
+    and D's templating may reference both B and C.
+    """
+    raw = _plan(
+        _task("a"),
+        _task("b", depends_on=["a"]),
+        _task("c", depends_on=["a"]),
+        _task(
+            "d",
+            depends_on=["b", "c"],
+            args={"left": "${b.result}", "right": "${c.result}"},
+        ),
+    )
+    plan = validate_plan(raw)
+    assert {t.id for t in plan.tasks} == {"a", "b", "c", "d"}
+
+
+def test_accepts_dag_with_transitive_cross_edge():
+    """A task may depend on both a direct parent and a transitive
+    ancestor (A -> B -> C plus A -> C). This is legal in a DAG and
+    must not be flagged as a cycle or duplicate edge.
+    """
+    raw = _plan(
+        _task("a"),
+        _task("b", depends_on=["a"]),
+        _task("c", depends_on=["a", "b"]),
+    )
+    plan = validate_plan(raw)
+    assert plan.tasks[2].depends_on == ["a", "b"]
+
+
+def test_accepts_plan_at_exact_max_nodes():
+    """MAX_NODES is the cap (inclusive). A plan with exactly MAX_NODES
+    tasks must validate; the existing test only covers the over-cap path.
+    """
+    tasks = [_task(f"n{i}") for i in range(MAX_NODES)]
+    plan = validate_plan(_plan(*tasks))
+    assert len(plan.tasks) == MAX_NODES
+
+
+def test_template_to_transitive_ancestor_is_allowed():
+    """Templating a non-immediate ancestor is fine as long as it's in
+    the upstream closure — covers the "diamond + grandparent ref" case.
+    """
+    raw = _plan(
+        _task("root"),
+        _task("mid", depends_on=["root"]),
+        _task(
+            "leaf",
+            depends_on=["mid"],
+            args={"top": "${root.result}"},
+        ),
+    )
+    plan = validate_plan(raw)
+    assert plan.tasks[2].args["top"] == "${root.result}"
+
+
+def test_template_to_sibling_is_rejected():
+    """Two children of the same parent are NOT in each other's upstream
+    closure — referencing a sibling must fail validation.
+    """
+    raw = _plan(
+        _task("root"),
+        _task("left", depends_on=["root"]),
+        _task(
+            "right",
+            depends_on=["root"],
+            args={"borrow": "${left.result}"},
+        ),
+    )
+    with pytest.raises(PlanValidationError, match="not an upstream dependency"):
+        validate_plan(raw)
+
+
+def test_wait_task_can_depend_on_tool_task():
+    """``wait`` nodes may sit downstream of evidence-gathering tools
+    (e.g. fetch-then-cooldown). Round-trip through plan_to_activity_inputs
+    so we also catch any hidden assumption that wait tasks must be roots.
+    """
+    raw = _plan(
+        _task("fetch"),
+        _wait("cooldown", duration="PT5M", depends_on=["fetch"]),
+        _task("retry", depends_on=["cooldown"]),
+    )
+    plan = validate_plan(raw)
+    inputs = plan_to_activity_inputs(plan)
+    cooldown = next(i for i in inputs if i["id"] == "cooldown")
+    assert cooldown["depends_on"] == ["fetch"]
+    assert cooldown["duration"] == "PT5M"
+
+
+def test_rejects_blank_task_id():
+    """``id`` is constrained to ``min_length=1``. An empty string must
+    surface a clean validation error rather than silently behaving as a
+    nameless node.
+    """
+    raw = _plan(_task(""))
+    with pytest.raises(PlanValidationError):
+        validate_plan(raw)
+
+
+def test_rejects_non_string_task_id():
+    raw = _plan({"id": 42, "type": "tool", "tool": ECHO_TOOL_NAME, "args": {}})
+    with pytest.raises(PlanValidationError):
+        validate_plan(raw)
+

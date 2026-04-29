@@ -90,21 +90,32 @@ Three concrete wins versus chaining tool calls in conversation:
 4. The orchestration runs each task as a Durable activity (tool calls) or
    a Durable timer (waits), using `task_all` to fan out parallel tasks and
    `depends_on` edges for sequencing.
-5. On completion (success, failure, or cooperative cancel) the
-   orchestration's final step writes a structured completion envelope into
-   a per-session notifications table.
-6. The agent's chat UI polls `get_workflow_status` on a short interval
-   while the session is visible, renders a live per-node progress view, and
-   replaces it with the final envelope when the workflow terminates. The
-   user sees the result land in the chat with no action required.
+5. **`start_workflow` is fire-and-forget from the agent's perspective.**
+   After receiving the `workflow_id`, the agent reports it to the user
+   and ends its turn. The agent does not poll `get_workflow_status` to
+   wait for completion; the workflow result is not pushed back into the
+   conversation as a tool result.
+6. The chat client (the built-in chat UI, or any external poller) polls
+   `GET /agent/workflows` on a short interval while the session is
+   visible, renders a live per-task progress card alongside the chat
+   thread, and updates the card with the final result envelope when the
+   workflow terminates. The user sees progress and the final output
+   without the agent doing any work.
+7. If the user later asks the agent about a previously-started
+   workflow ("what did the incident workflow find?"), the agent calls
+   `get_workflow_status` on demand and reports back. This is the only
+   path by which workflow output ever enters the agent's context window.
 
 > [!NOTE]
 > **Intermediate task results never enter the agent's context window.**
-> The agent receives the `workflow_id` immediately and, on a later turn,
-> the final completion envelope. Per-node results are accessible
-> programmatically via `get_workflow_status` if the agent wants them, but
-> the default path is "summary only." This is the same context-window
-> discipline that makes [programmatic tool calling][ptc] cheap.
+> The agent receives only the `workflow_id` from `start_workflow`. Final
+> output is delivered to the user by the chat client outside the agent
+> loop; the agent only sees that output if a follow-up user question
+> causes it to call `get_workflow_status`. Per-node results are
+> accessible programmatically via `get_workflow_status` if the agent
+> wants them, but the default path is "summary only." This is the same
+> context-window discipline that makes [programmatic tool calling][ptc]
+> cheap.
 
 The design is intentionally aligned with the
 [MCP Tasks SEP-2557 proposal](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2557);
@@ -224,49 +235,48 @@ The orchestrator holds these invariants:
 
 ## Status envelope
 
-Returned by `get_workflow_status` and also shaped identically inside the
-pending-notifications drain endpoint:
+Returned by `get_workflow_status` and (per-workflow, in an array) by
+`GET /agent/workflows`. The same shape is used everywhere a status is
+read so external clients (operator dashboards, MCP Tasks bridges) can
+consume a single contract:
 
 ```json
 {
   "workflow_id": "...",
   "agent_name": "incident-triage",
-  "status": "running|succeeded|failed|canceled|terminated",
-  "result": { "...": "..." },
-  "failed_task_id": "summarize",
-  "error_type": "schema_validation|unknown_tool|bad_dependency|cycle|bad_template|runtime_tool_error|timeout|canceled",
-  "error_message": "...",
-  "attempts": 3,
-  "nodes": [
-    {
-      "id": "fetch_a", "type": "tool",
-      "status": "succeeded", "attempt": 1,
-      "started_at": "...", "ended_at": "...",
-      "result_summary": "...", "error": null
-    }
-  ],
-  "sequence": 42
+  "runtime_status": "Running|Completed|Failed|Terminated|Canceled|Pending",
+  "custom_status": "3/7 tasks done, current=summarize",
+  "output": { "...": "..." },
+  "created_time": "...",
+  "last_updated_time": "..."
 }
 ```
 
-`sequence` is a monotonic counter per session, used as the poll cursor by
-the notifications drain endpoint.
+`runtime_status` is the canonical value the chat UI cards and any
+external poller render against. `output` is populated only when the
+workflow has reached a terminal state and (for cooperative cancel)
+includes any partial results gathered before the cancel signal landed.
 
 ## Completion delivery
 
-The orchestration's final step (on success, failure, or cooperative cancel
-— **not** hard terminate) writes the completion envelope into an
-Azure Storage Table keyed by session. A session-scoped drain endpoint:
+Completion delivery is **poll-based**, by design. There is no push
+channel from the orchestrator into the agent's chat thread.
 
-```http
-GET /session/<session_id>/workflow-notifications?since=<cursor>
-```
-
-returns envelopes with `sequence > cursor`. The endpoint is at-least-once;
-clients advance their cursor after successful render and dedupe on
-`(workflow_id, terminal_state)`. The built-in chat UI polls this endpoint
-every 2–5 seconds while the tab is visible, pauses when the tab is
-hidden, and drains on reconnect.
+- The chat client (the built-in chat UI under `/`, or any external
+  poller) calls `GET /agent/workflows` on a 2–5 second cadence while
+  the chat session is visible. It receives an array of status
+  envelopes for the calling session's workflows, renders a per-workflow
+  progress card next to the chat thread, and updates the card when the
+  workflow reaches a terminal state.
+- The agent itself never receives the completion envelope as a tool
+  result. After `start_workflow` returns the `workflow_id`, the agent's
+  job is done; it should report the ID and end the turn. If the user
+  later asks the agent about the workflow, the agent calls
+  `get_workflow_status` on demand — that on-demand call is the only
+  path by which workflow output enters the agent's context window.
+- The `GET /agent/workflows` endpoint is scoped to the calling session
+  via the `x-ms-session-id` request header and the per-workflow
+  ownership scheme described in [Ownership](#ownership).
 
 The data shape maps directly onto MCP Tasks SEP-2557 (`CreateTaskResult`,
 `tasks/get`, `tasks/cancel`); future direct MCP Tasks support is a thin
@@ -274,10 +284,12 @@ protocol shim.
 
 ## Ownership
 
-Every workflow is tagged at creation with an owner key of
-`(session_id, agent_name)`. `get_workflow_status`, `list_workflows`,
-`cancel_workflow`, and `terminate_workflow` are scoped to the owning
-pair; a mismatched query returns 404 (no existence probing).
+Every workflow's Durable instance ID is prefixed with
+`sha256(session_id)[:12]` at creation. `get_workflow_status`,
+`list_workflows`, `cancel_workflow`, and `terminate_workflow` filter
+on that prefix; a workflow whose prefix does not match the calling
+session's hash is treated as nonexistent (returns 404, never 403, so
+existence cannot be probed by guessing IDs across sessions).
 
 ## Observability
 

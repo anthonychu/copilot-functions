@@ -23,8 +23,8 @@ Tracked by [issue #2](https://github.com/anthonychu/azure-functions-agents/issue
 - [x] M1 step 2c — completion delivery + live-progress chat UI
 - [x] M1 step 3a/3b — fan-out, templating, durable timers, cooperative cancel
 - [x] M1 step 3c — sample evidence tools + `workflows.allowed_tools` *(this file)*
-- [ ] M1 step 4 — additional plan-parser tests
-- [ ] M1 step 5 — demo dry-run
+- [x] M1 step 4 — additional plan-parser tests
+- [x] M1 step 5 — demo dry-run *(this file + `scripts/demo.{ps1,sh}`)*
 
 ## Run locally
 
@@ -82,6 +82,40 @@ If you want to see cooperative cancellation, ask "actually cancel that"
 while the workflow is mid-wait — the agent will call `cancel_workflow`,
 the orchestration unwinds at the next wave boundary, and the live card
 flips to `Canceled` with whatever partial results were already gathered.
+
+## Demo dry-run script
+
+`scripts/demo.ps1` (Windows) and `scripts/demo.sh` (macOS/Linux) are
+presenter aids. They run a short pre-flight (Azurite reachable, Functions
+host responding, workflow tools wired) and then walk you through the five
+narration steps above one at a time, pausing between each so you can
+read along to your audience. The script does **not** drive the chat
+itself — pasting the prompt and watching the live card is intentionally
+manual so the audience sees the agent author the plan in real time.
+
+**Bash:**
+
+```bash
+cd samples/workflow-incident-triage
+./scripts/demo.sh                       # full dry-run
+./scripts/demo.sh --no-browser          # skip auto-opening the chat UI
+./scripts/demo.sh --skip-pause          # rehearsal mode (no Enter prompts)
+```
+
+**PowerShell:**
+
+```powershell
+Set-Location samples\workflow-incident-triage
+.\scripts\demo.ps1                      # full dry-run
+.\scripts\demo.ps1 -NoBrowser
+.\scripts\demo.ps1 -SkipPause
+```
+
+The script exits non-zero (with a clear remediation hint) if any
+pre-flight check fails, so you can run it as the first thing before any
+stakeholder demo and know within seconds whether the environment is
+ready. Functional validation lives in the pytest suite — the script is
+not a substitute for tests.
 
 ## What's still mocked
 

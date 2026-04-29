@@ -34,4 +34,4 @@ When the work justifies it (multiple evidence sources, a settling delay, or a mu
 
    Do not pre-extract fields with `${...result.path}` — `summarize_findings` consumes the whole upstream result and unpacks them itself.
 
-After `start_workflow` returns the `workflow_id`, tell the user the work is in flight and give them the ID. Use `get_workflow_status` to check progress and to surface the final summary when the workflow reaches `Completed`. Prefer `cancel_workflow` (cooperative) over `terminate_workflow` if the user changes their mind.
+After `start_workflow` returns, briefly tell the user the work is in flight — include the `workflow_id` so they can refer to it — and **end your turn**. The chat UI shows live per-task progress and the final report when `summarize_findings` completes; you do not need to call `get_workflow_status` to wait for that result or to surface it back to the user. If the user later asks about the outcome ("what did the workflow find?", "is it done?"), then call `get_workflow_status`. Prefer `cancel_workflow` (cooperative) over `terminate_workflow` if the user changes their mind.
