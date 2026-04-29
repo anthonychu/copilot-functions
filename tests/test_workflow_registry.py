@@ -267,3 +267,65 @@ def test_addendum_enforces_fire_and_forget_no_poll_guidance():
     # Negative checks: the prior wording must not creep back in.
     assert "Poll this" not in descriptions["get_workflow_status"]
     assert "call get_workflow_status to check progress" not in descriptions["start_workflow"]
+
+
+def test_addendum_documents_workflow_notification_contract():
+    """Regression guard: the addendum and both relevant tool descriptions
+    must teach the agent the chat-client-injected `<workflow-notification>`
+    envelope contract — call get_workflow_status once per listed
+    `<workflow-id>`, summarize, do not start follow-on work. Without this
+    guidance the agent either (a) ignores the synthetic prompt as noise
+    or (b) tries to keep polling instead of treating the notification as
+    terminal. The XML envelope shape (modeled on the `<task-notification>`
+    pattern from Claude Code-style harnesses) is preferred over a
+    free-form prefix because it is robust against prefix collisions in
+    user input and lets a future UI parse the wrapper for richer
+    rendering without changing the agent contract.
+    """
+    registry.register_workflow_tool(
+        "demo_evidence_tool",
+        "Sample tool for the notification-contract regression test.",
+        _noop,
+    )
+    tools, addendum = integration.build_workflow_integration(
+        _FakeApp(), _enable_metadata(allowed=["demo_evidence_tool"])
+    )
+    # Addendum must name the envelope shape verbatim (so the LLM sees
+    # the exact tags it will receive) and explain the one-shot
+    # summarize-only contract.
+    assert "<workflow-notification>" in addendum
+    assert "<workflow-id>" in addendum
+    assert "<status>" in addendum
+    assert "summary-only" in addendum
+    # The auto-injected per-turn prompt is intentionally data-only
+    # (envelope + a one-line tool reminder). Anything previously inlined
+    # in that prompt and trimmed away must be pinned here so a future
+    # refactor of the addendum doesn't silently drop the contract:
+    #   * "no follow-on workflows" — the notification turn is summary-only
+    #     and the agent must not start new workflows or extra tool calls
+    #     unless the user later asks for a deeper look.
+    #   * race handling — if `get_workflow_status` returns a non-terminal
+    #     status after a notification, the agent must say so and end the
+    #     turn rather than polling again.
+    #   * empty-output handling — terminated/canceled workflows with no
+    #     usable final output must be reported plainly.
+    #   * cancel-vs-terminate guidance — `cancel_workflow` is preferred
+    #     when the user changes their mind; `terminate_workflow` is the
+    #     abrupt escape hatch.
+    assert "do not start new workflows" in addendum
+    assert "non-terminal" in addendum
+    assert "do not poll again" in addendum
+    assert "without a usable final output" in addendum
+    assert "say so plainly" in addendum
+    assert "cancel_workflow" in addendum
+    assert "terminate_workflow" in addendum
+    # The legacy free-form prefix must not creep back in — it would
+    # produce conflicting guidance and confuse the agent.
+    assert "[Workflow notification]" not in addendum
+    # Tool descriptions must reinforce the same envelope so the LLM
+    # sees it both at system-prompt time and at tool-call selection time.
+    descriptions = {tool.name: tool.description for tool in tools}
+    assert "<workflow-notification>" in descriptions["start_workflow"]
+    assert "<workflow-notification>" in descriptions["get_workflow_status"]
+    assert "[Workflow notification]" not in descriptions["start_workflow"]
+    assert "[Workflow notification]" not in descriptions["get_workflow_status"]

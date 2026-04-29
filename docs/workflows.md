@@ -99,23 +99,33 @@ Three concrete wins versus chaining tool calls in conversation:
    `GET /agent/workflows` on a short interval while the session is
    visible, renders a live per-task progress card alongside the chat
    thread, and updates the card with the final result envelope when the
-   workflow terminates. The user sees progress and the final output
-   without the agent doing any work.
-7. If the user later asks the agent about a previously-started
+   workflow terminates. The user sees per-task progress live without the
+   agent doing any work.
+7. When the workflow reaches a terminal state, the built-in chat UI
+   detects the transition and **injects a synthetic user message
+   containing one or more `<workflow-notification>` envelopes into
+   the conversation**, prompting the agent to call
+   `get_workflow_status` once per listed `<workflow-id>` and produce
+   a short natural-language summary. The user gets a final
+   conversational turn that closes the loop without having to type
+   anything. See [Auto-notification](#auto-notification) below.
+8. If the user later asks the agent about a previously-started
    workflow ("what did the incident workflow find?"), the agent calls
-   `get_workflow_status` on demand and reports back. This is the only
-   path by which workflow output ever enters the agent's context window.
+   `get_workflow_status` on demand and reports back. The on-demand
+   call and the auto-notification turn are the two paths by which
+   workflow output enters the agent's context window.
 
 > [!NOTE]
 > **Intermediate task results never enter the agent's context window.**
-> The agent receives only the `workflow_id` from `start_workflow`. Final
-> output is delivered to the user by the chat client outside the agent
-> loop; the agent only sees that output if a follow-up user question
-> causes it to call `get_workflow_status`. Per-node results are
-> accessible programmatically via `get_workflow_status` if the agent
-> wants them, but the default path is "summary only." This is the same
-> context-window discipline that makes [programmatic tool calling][ptc]
-> cheap.
+> The agent receives only the `workflow_id` from `start_workflow`. Per-task
+> results stay in the workflow store; the chat client renders them next
+> to the conversation. The only output the agent ever ingests is the
+> single final-result envelope it fetches via `get_workflow_status` —
+> either when the chat client posts a synthetic
+> `<workflow-notification>` user message (see
+> [Auto-notification](#auto-notification)) or when the user
+> explicitly asks a follow-up question. This is the same context-window
+> discipline that makes [programmatic tool calling][ptc] cheap.
 
 The design is intentionally aligned with the
 [MCP Tasks SEP-2557 proposal](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2557);
@@ -273,10 +283,12 @@ channel from the orchestrator into the agent's chat thread.
   workflow reaches a terminal state.
 - The agent itself never receives the completion envelope as a tool
   result. After `start_workflow` returns the `workflow_id`, the agent's
-  job is done; it should report the ID and end the turn. If the user
-  later asks the agent about the workflow, the agent calls
-  `get_workflow_status` on demand — that on-demand call is the only
-  path by which workflow output enters the agent's context window.
+  job is done; it should report the ID and end the turn. When the chat
+  client detects a terminal-state transition it posts a synthetic user
+  message containing one or more `<workflow-notification>` envelopes
+  (see [Auto-notification](#auto-notification) below); that message —
+  and any user-driven follow-up — are the only paths by which workflow
+  output enters the agent's context window via `get_workflow_status`.
 - The `GET /agent/workflows` endpoint is scoped to the calling session
   via the `x-ms-session-id` request header and the per-workflow
   ownership scheme described in [Ownership](#ownership).
@@ -284,6 +296,50 @@ channel from the orchestrator into the agent's chat thread.
 The data shape maps directly onto MCP Tasks SEP-2557 (`CreateTaskResult`,
 `tasks/get`, `tasks/cancel`); future direct MCP Tasks support is a thin
 protocol shim.
+
+### Auto-notification
+
+When the built-in chat UI's poll loop observes a workflow transition
+to a terminal state (`Completed`, `Failed`, `Canceled`, `Terminated`),
+it injects a synthetic user message into the conversation containing
+one `<workflow-notification>` envelope per finished workflow plus a
+single short reminder, of the form:
+
+```text
+<workflow-notification>
+  <workflow-id>abc-123</workflow-id>
+  <status>Completed</status>
+  <summary>Workflow abc-123 finished with status Completed.</summary>
+</workflow-notification>
+
+Call `get_workflow_status` to retrieve the final result.
+```
+
+The injected message is deliberately data-only — modeled on the
+`<task-notification>` shape used by Claude Code-style harnesses — and
+carries **no prescriptive instructions** about how the agent should
+respond. The agent's system prompt addendum already owns the contract
+(call `get_workflow_status` once per `<workflow-id>`, summarize, no
+follow-on workflows, race-handling, empty-output handling), so per
+turn the model only needs the data plus a single reminder of the
+relevant tool. This keeps notification turns lean and lets a future
+chat-UI rendering layer parse the wrapper to display a richer
+collapsed card without changing the agent contract.
+
+This is a built-in-chat-UI convenience; it is **not** part of the
+runtime contract enforced by the framework. External clients (e.g.
+an MCP-Tasks-aware client) are free to adopt the same convention or
+to drive completion handling some other way (e.g. a dedicated `task
+completed` UI event with no synthetic prompt). The server-side
+mechanics — `GET /agent/workflows`, `get_workflow_status`, ownership
+scoping — are the actual contract; the synthetic-prompt format is a
+client-side detail.
+
+The chat UI persists a per-`{baseUrl, sessionId}` set of already-
+notified workflow ids in `sessionStorage`, so refreshing the page
+after a summary turn has landed does not re-fire the notification.
+Same-poll concurrent completions are batched into one notification
+turn.
 
 ## Ownership
 

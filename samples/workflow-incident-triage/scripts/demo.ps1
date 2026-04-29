@@ -304,19 +304,25 @@ view.
     Pause-If-Interactive
 }
 
-Write-Step -Title (Next-StepLabel "terminal state lands automatically") -Body @"
-Around the 35-second mark the card should flip to 'Completed' and the
-final summarize_findings result should appear inline. The agent did not
-have to poll for completion — it ended its turn after start_workflow
-returned. The chat UI is what's polling the workflow on a 2–5s cadence;
-the agent itself stays out of the loop until the user asks a follow-up.
+Write-Step -Title (Next-StepLabel "terminal state and auto-notification") -Body @"
+Around the 35-second mark the card should flip to 'Completed'. A
+moment later, the chat UI will auto-inject a synthetic user message
+labeled 'Automatic workflow notification' (subtle styling, expandable
+to show the raw injected prompt). That message tells the agent the
+workflow finished; the agent calls get_workflow_status once and
+writes a short natural-language summary inline as a normal Copilot
+turn — closing the loop without you typing anything.
 
 Things to call out for stakeholders:
 
-  * Token cost: the agent only saw the FINAL summary (and only if the
-    user asks for it), not every fetch output, because templating
-    happened inside the orchestrator. This is Anthropic-style
-    programmatic tool calling with durability.
+  * Fire-and-forget loop: the agent ended its turn after
+    start_workflow returned. It did not poll. It only re-engaged
+    because the chat client posted the synthetic notification on
+    completion.
+  * Token cost: the agent only sees the FINAL summary envelope (one
+    get_workflow_status call), not every per-task output, because
+    templating happens inside the orchestrator. This is
+    Anthropic-style programmatic tool calling with durability.
   * Observability: the same status envelope the UI polls is also
     available outside the chat via get_workflow_status — operator
     dashboards, on-call tooling, and MCP Tasks clients all read the
@@ -332,9 +338,12 @@ wait, send a follow-up message:
 
 The agent should call cancel_workflow. The orchestration unwinds at the
 next wave boundary, the live card flips to 'Canceled', and partial
-results gathered before the cancel are still visible. Contrast this with
-terminate_workflow, which would stop abruptly and not push back a
-completion envelope.
+results gathered before the cancel are still visible. The auto-
+notification then fires, prompting the agent to acknowledge the
+cancellation in a final turn. Contrast this with terminate_workflow,
+which stops abruptly; the auto-notification still fires (the chat UI
+sees the terminal state regardless of cooperativity), and the agent
+will say plainly that no usable result is available.
 "@
 
 Write-Host ""

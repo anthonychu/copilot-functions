@@ -191,14 +191,19 @@ The agent should:
    the three fetch results via `${...result}` templates.
 2. Call `start_workflow`, return the `workflow_id` to the chat, and let the
    built-in live-progress card take over.
-3. Within ~35 seconds, the workflow should reach `Completed` and the card
-   should expose the structured summary (likely cause, confidence,
-   evidence, recommended action).
+3. Within ~35 seconds, the workflow should reach `Completed`. The chat UI
+   then auto-injects a synthetic user message containing a
+   `<workflow-notification>` envelope; the agent
+   calls `get_workflow_status` once and writes a short natural-language
+   summary inline as a normal Copilot turn — closing the loop without you
+   typing anything.
 
 If you want to see cooperative cancellation, ask "actually cancel that"
 while the workflow is mid-wait — the agent will call `cancel_workflow`,
-the orchestration unwinds at the next wave boundary, and the live card
-flips to `Canceled` with whatever partial results were already gathered.
+the orchestration unwinds at the next wave boundary, the live card flips
+to `Canceled`, and the auto-notification kicks in so the agent
+acknowledges the cancellation in its own turn (with whatever partial
+results were already gathered).
 
 ## Demo dry-run script
 
