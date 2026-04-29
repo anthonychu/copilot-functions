@@ -1,0 +1,9 @@
+# Keep shell scripts and Functions runtime config files using LF line
+# endings on all platforms. Without this, Windows checkouts with
+# `core.autocrlf=true` corrupt `*.sh` so they fail under Git Bash / WSL,
+# and `host.json` / `local.settings.json` style files come back with
+# CRLF that some tooling chokes on.
+*.sh         text eol=lf
+*.bash       text eol=lf
+host*.json   text eol=lf
+local.settings*.json* text eol=lf
