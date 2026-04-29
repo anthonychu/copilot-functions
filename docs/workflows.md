@@ -137,10 +137,13 @@ workflows:
     - fetch_url
     - summarize
   # Later-milestone knobs (M5):
-  # backend: storage | dts
-  # task_hub: AgentWorkflows
   # max_nodes: 100
   # allowed_sub_agents: []   # M4, deny-by-default
+  #
+  # Note: the Durable execution backend (Azure Storage vs Durable Task
+  # Scheduler) and the task hub name are configured in host.json's
+  # `extensions.durableTask.storageProvider` block (and matching app
+  # settings), NOT here — the library never reads or routes on backend.
 ---
 ```
 
@@ -295,8 +298,9 @@ existence cannot be probed by guessing IDs across sessions).
 
 - **Live-progress chat UI** (M1) — built-in poll loop renders per-node
   state in the chat session.
-- **Durable Task Scheduler portal** (M2) — when `workflows.backend: dts`,
-  each workflow appears as a queryable instance with per-task state,
+- **Durable Task Scheduler portal** (M2) — when the app's
+  `host.json` is configured with the DTS `storageProvider`, each
+  workflow appears as a queryable instance with per-task state,
   retry history, and parent-child lineage (for sub-agents, M4).
 - **`customStatus`** — the orchestration emits a concise summary
   (`"3/7 tasks done, current=summarize"`) for low-cost polling.

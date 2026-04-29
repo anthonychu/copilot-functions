@@ -31,6 +31,22 @@ from .tools import build_workflow_tools
 log = logging.getLogger(__name__)
 
 
+# Whitelist of frontmatter keys we recognize under ``workflows``. Any
+# other key is rejected at app start so typos (``enabld``, ``allow_tools``)
+# surface immediately rather than silently degrading to defaults. New
+# knobs added in later milestones must be added here too.
+#
+# Note: the Durable execution backend (Azure Storage vs Durable Task
+# Scheduler) is selected entirely via ``host.json``'s ``storageProvider``
+# block and the matching app settings — the library never reads or
+# routes on it. We deliberately do *not* expose ``workflows.backend``
+# here because a frontmatter declaration would just be a parallel
+# assertion that can drift from the truth.
+_ALLOWED_WORKFLOWS_KEYS: frozenset = frozenset({
+    "enabled", "allowed_tools",
+})
+
+
 # Kept short on purpose — the individual tool descriptions carry the
 # per-tool specifics. This is only about when the LLM should reach for
 # a workflow instead of driving the work from chat directly. The
@@ -72,31 +88,103 @@ _BASE_ADDENDUM = (
 WORKFLOW_SYSTEM_ADDENDUM = _BASE_ADDENDUM
 
 
+def _validate_workflows_block(metadata: Dict[str, Any]) -> None:
+    """Shape-check the ``workflows`` block before any field is read.
+
+    Catches four classes of mistake at app start:
+
+    - ``workflows`` set to a non-mapping (e.g. a string)
+    - typo'd or unsupported key inside the block (e.g. ``enabld``,
+      ``backend``, ``task_hub``). The latter two name real Durable
+      concepts but are *not* honored by the library: Durable backend
+      selection lives in ``host.json``'s
+      ``extensions.durableTask.storageProvider`` block and task-hub
+      naming lives in ``extensions.durableTask.hubName``. Silent
+      acceptance would mislead a contributor into thinking frontmatter
+      drives behavior it doesn't.
+    - non-boolean ``enabled`` (``enabled: "false"`` is a YAML
+      foot-gun — without this guard it would parse as truthy and
+      enable workflows).
+    - malformed ``allowed_tools`` (e.g. a string instead of a list,
+      or a list with an empty string). Validated here so a
+      ``allowed_tools`` typo surfaces even when the agent currently
+      has ``enabled: false``.
+
+    Returning silently is the success path; raises ``RuntimeError``
+    with a message naming the offending key/value otherwise. Called
+    unconditionally from :func:`build_workflow_integration`, including
+    the disabled path, so frontmatter typos surface even before the
+    user enables workflows.
+    """
+    block = metadata.get("workflows")
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise RuntimeError(
+            "workflows must be a mapping (e.g. `workflows: { enabled: true }`); "
+            f"got {block!r}"
+        )
+    unknown = sorted(set(block.keys()) - _ALLOWED_WORKFLOWS_KEYS)
+    if unknown:
+        # Targeted hint for the two real-Durable-concept keys that
+        # contributors are most likely to reach for; generic hint
+        # otherwise so plain typos like `enabld` don't get a
+        # misleading host.json suggestion.
+        if "backend" in unknown:
+            hint = (
+                " (Durable backend selection lives in host.json's "
+                "extensions.durableTask.storageProvider block, not in "
+                "agent frontmatter.)"
+            )
+        elif "task_hub" in unknown:
+            hint = (
+                " (Task hub name lives in host.json's "
+                "extensions.durableTask.hubName, not in agent "
+                "frontmatter.)"
+            )
+        else:
+            hint = ""
+        raise RuntimeError(
+            f"unknown key(s) under workflows: {unknown}. Supported keys: "
+            f"{sorted(_ALLOWED_WORKFLOWS_KEYS)}.{hint}"
+        )
+    if "enabled" in block and not isinstance(block["enabled"], bool):
+        raise RuntimeError(
+            "workflows.enabled must be a boolean (true/false); got "
+            f"{block['enabled']!r}"
+        )
+    if "allowed_tools" in block:
+        raw = block["allowed_tools"]
+        if not isinstance(raw, list) or not all(
+            isinstance(x, str) and x for x in raw
+        ):
+            raise RuntimeError(
+                "workflows.allowed_tools must be a list of non-empty strings; "
+                f"got {raw!r}"
+            )
+
+
 def _workflows_enabled(metadata: Dict[str, Any]) -> bool:
     block = metadata.get("workflows")
     if not isinstance(block, dict):
         return False
+    # Shape check has already enforced bool-ness via _validate_workflows_block.
     return bool(block.get("enabled", False))
 
 
 def _read_allowed_tools(metadata: Dict[str, Any]) -> Optional[List[str]]:
-    """Extract and shape-check ``workflows.allowed_tools`` from frontmatter.
+    """Extract ``workflows.allowed_tools`` from frontmatter.
 
     Returns ``None`` when the field is omitted (caller falls back to
-    ``registry.public_tool_names()``). Raises ``RuntimeError`` if the
-    field is present but malformed — fail fast at app start with a
-    clear error rather than silently degrading to "everything allowed".
+    ``registry.public_tool_names()``). Shape (``list[non-empty str]``)
+    has already been enforced by :func:`_validate_workflows_block`,
+    so this is now just a safe accessor; the registry lookup
+    happens later in :func:`_compute_effective_allowlist`.
     """
     block = metadata.get("workflows") or {}
     if "allowed_tools" not in block:
         return None
-    raw = block["allowed_tools"]
-    if not isinstance(raw, list) or not all(isinstance(x, str) and x for x in raw):
-        raise RuntimeError(
-            "workflows.allowed_tools must be a list of non-empty strings; "
-            f"got {raw!r}"
-        )
-    return list(raw)
+    return list(block["allowed_tools"])
 
 
 def _compute_effective_allowlist(
@@ -175,11 +263,18 @@ def build_workflow_integration(
     caller can unconditionally extend its tool list and concat the
     addendum without branching.
     """
+    # Shape-check the workflows block first so typos surface at app
+    # start regardless of whether workflows are enabled. A typo'd key
+    # or an "enabled: 'false'" string would otherwise only fail when
+    # the agent is later flipped on.
+    _validate_workflows_block(metadata)
+
     if not _workflows_enabled(metadata):
-        # Disabled path is a no-op: do NOT call register_workflows or
-        # registry.set_app_config. A previously-configured allowlist (if
-        # any) is intentionally left untouched so this function is safe
-        # to call multiple times in test scenarios that toggle metadata.
+        # Disabled path is a no-op past the shape check: do NOT call
+        # register_workflows or registry.set_app_config. A previously-
+        # configured allowlist (if any) is intentionally left untouched
+        # so this function is safe to call multiple times in test
+        # scenarios that toggle metadata.
         return [], None
 
     register_workflows(app)
