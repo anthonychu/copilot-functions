@@ -73,12 +73,25 @@ docker run -d --name dts-emulator -p 8080:8080 -p 8082:8082 \
 ### 2. Swap to the DTS `host.json` variant
 
 A canonical DTS `host.json` lives at `src/host.dts.json`; it differs
-from the default only in the `extensions.durableTask` block (adds
-`hubName` and `storageProvider` of type `azureManaged`). The standard
-v4 extension bundle (`Microsoft.Azure.Functions.ExtensionBundle`,
-`[4.*, 5.0.0)`) already ships
-`Microsoft.Azure.WebJobs.Extensions.DurableTask.AzureManaged`, so
-**no bundle change is needed** — only the `storageProvider` block.
+from the default in two places:
+
+- the `extensions.durableTask` block adds `hubName` and a
+  `storageProvider` of type `azureManaged`; and
+- the `extensionBundle` version range is pinned to **`[4.32.0, 5.0.0)`**
+  rather than the looser `[4.*, 5.0.0)` the Storage variant uses.
+
+The pin matters: the
+`Microsoft.Azure.WebJobs.Extensions.DurableTask.AzureManaged` provider
+first ships in **standard v4 extension bundle 4.32.0**. Earlier 4.x
+bundles do not include it, and the Functions host will refuse to
+start with `Storage provider type (azureManaged) was not found.
+Available storage providers: Netherite, mssql, AzureStorage`. If you
+already have an older 4.x bundle cached locally
+(`%USERPROFILE%\.azure-functions-core-tools\Functions\ExtensionBundles`
+on Windows, `~/.azure-functions-core-tools/Functions/ExtensionBundles`
+elsewhere), the host will use it as long as the range still allows
+it; pinning the lower bound to `4.32.0` forces a fresh download of a
+bundle that contains the AzureManaged provider.
 
 Use the helper script to swap it in and back. Run it from the sample
 root in a PowerShell session — Windows PowerShell or `pwsh` on Windows,
