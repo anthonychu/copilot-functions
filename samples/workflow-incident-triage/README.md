@@ -28,6 +28,7 @@ Tracked by [issue #2](https://github.com/anthonychu/azure-functions-agents/issue
 - [x] M2 step 2.0 — DTS emulator reachability spike
 - [x] M2 step 2.1 — frontmatter validation hardening (backend NOT in frontmatter)
 - [x] M2 step 2.2 — DTS-flavored sample switch *(this file + `host.dts.json` + `scripts/swap-backend.{ps1,sh}`)*
+- [x] M2 step 2.4 — backend-aware demo dry-run *(`scripts/demo.{ps1,sh}` auto-detects backend, probes the DTS gRPC port when DTS is active, and inserts a dashboard-walkthrough narration step)*
 
 ## Run locally
 
@@ -79,24 +80,16 @@ v4 extension bundle (`Microsoft.Azure.Functions.ExtensionBundle`,
 `Microsoft.Azure.WebJobs.Extensions.DurableTask.AzureManaged`, so
 **no bundle change is needed** — only the `storageProvider` block.
 
-Use the helper script to swap it in and back:
-
-**PowerShell:**
+Use the helper script to swap it in and back. Run it from the sample
+root in a PowerShell session — Windows PowerShell or `pwsh` on Windows,
+[`pwsh`](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
+on macOS/Linux:
 
 ```powershell
-Set-Location samples\workflow-incident-triage
-.\scripts\swap-backend.ps1 dts          # apply DTS host.json
-.\scripts\swap-backend.ps1 -Status      # show currently-active backend
-.\scripts\swap-backend.ps1 storage      # restore the default Azure Storage host.json
-```
-
-**Bash:**
-
-```bash
 cd samples/workflow-incident-triage
-./scripts/swap-backend.sh dts           # apply DTS host.json
-./scripts/swap-backend.sh --status      # show currently-active backend
-./scripts/swap-backend.sh storage       # restore the default Azure Storage host.json
+./scripts/swap-backend.ps1 dts          # apply DTS host.json
+./scripts/swap-backend.ps1 -Status      # show currently-active backend
+./scripts/swap-backend.ps1 storage      # restore the default Azure Storage host.json
 ```
 
 > [!NOTE]
@@ -144,11 +137,7 @@ the story stakeholders are buying.
 ### Switching back to Azure Storage
 
 ```powershell
-.\scripts\swap-backend.ps1 storage
-```
-
-```bash
-./scripts/swap-backend.sh storage
+./scripts/swap-backend.ps1 storage
 ```
 
 Restart `func start` after any swap so the host reloads `host.json`.
@@ -200,30 +189,28 @@ flips to `Canceled` with whatever partial results were already gathered.
 
 ## Demo dry-run script
 
-`scripts/demo.ps1` (Windows) and `scripts/demo.sh` (macOS/Linux) are
-presenter aids. They run a short pre-flight (Azurite reachable, Functions
-host responding, workflow tools wired) and then walk you through the five
-narration steps above one at a time, pausing between each so you can
-read along to your audience. The script does **not** drive the chat
-itself — pasting the prompt and watching the live card is intentionally
-manual so the audience sees the agent author the plan in real time.
+`scripts/demo.ps1` is a presenter aid. It auto-detects the active
+Durable backend (Azure Storage or DTS) from `host.json` and runs a
+short pre-flight tailored to it: Azurite always (the Functions runtime
+requires `AzureWebJobsStorage` regardless of the Durable backend), the
+DTS gRPC endpoint when DTS is selected, and finally the Functions host
+plus the workflow tools route. It then walks you through the narration
+steps one at a time, pausing between each so you can read along to your
+audience. When DTS is the active backend, an extra step appears between
+"watch the workflow card" and "terminal state lands" that points the
+presenter at the operator dashboard at <http://localhost:8082>. The
+script does **not** drive the chat itself — pasting the prompt and
+watching the live card is intentionally manual so the audience sees the
+agent author the plan in real time.
 
-**Bash:**
-
-```bash
-cd samples/workflow-incident-triage
-./scripts/demo.sh                       # full dry-run
-./scripts/demo.sh --no-browser          # skip auto-opening the chat UI
-./scripts/demo.sh --skip-pause          # rehearsal mode (no Enter prompts)
-```
-
-**PowerShell:**
+Run from a PowerShell session (Windows PowerShell or `pwsh` on Windows;
+`pwsh` on macOS/Linux):
 
 ```powershell
-Set-Location samples\workflow-incident-triage
-.\scripts\demo.ps1                      # full dry-run
-.\scripts\demo.ps1 -NoBrowser
-.\scripts\demo.ps1 -SkipPause
+cd samples/workflow-incident-triage
+./scripts/demo.ps1                      # full dry-run
+./scripts/demo.ps1 -NoBrowser           # skip auto-opening the chat UI
+./scripts/demo.ps1 -SkipPause           # rehearsal mode (no Enter prompts)
 ```
 
 The script exits non-zero (with a clear remediation hint) if any
@@ -231,13 +218,6 @@ pre-flight check fails, so you can run it as the first thing before any
 stakeholder demo and know within seconds whether the environment is
 ready. Functional validation lives in the pytest suite — the script is
 not a substitute for tests.
-
-> [!NOTE]
-> The current dry-run script is Storage-aware only — it probes Azurite
-> on port 10000. When running on the DTS backend, skip the dry-run for
-> now (or run it before swapping) and use the DTS dashboard at
-> <http://localhost:8082> as your live operator surface. A
-> backend-aware probe is tracked as M2 step 2.4.
 
 ## What's still mocked
 

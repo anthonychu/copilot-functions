@@ -24,15 +24,15 @@
     Show the currently-active backend without changing anything.
 
 .EXAMPLE
-    .\swap-backend.ps1 storage
+    ./swap-backend.ps1 storage
     Restore the committed Azure Storage host.json.
 
 .EXAMPLE
-    .\swap-backend.ps1 dts
+    ./swap-backend.ps1 dts
     Apply the Durable Task Scheduler host.json variant.
 
 .EXAMPLE
-    .\swap-backend.ps1 -Status
+    ./swap-backend.ps1 -Status
     Print which backend is currently active.
 #>
 
@@ -66,7 +66,7 @@ function Write-Status {
     switch ($current) {
         "storage" { Write-Host "current backend: " -NoNewline; Write-Host "storage" -ForegroundColor Green -NoNewline; Write-Host "  (Azure Storage / Azurite -- host.json default)" }
         "dts"     { Write-Host "current backend: " -NoNewline; Write-Host "dts"     -ForegroundColor Cyan  -NoNewline; Write-Host "      (Durable Task Scheduler -- host.dts.json applied)" }
-        "missing" { Write-Host "current backend: " -NoNewline; Write-Host "missing" -ForegroundColor Red   -NoNewline; Write-Host "  (host.json not found in $SrcDir -- run swap-backend.ps1 storage|dts)" }
+        "missing" { Write-Host "current backend: " -NoNewline; Write-Host "missing" -ForegroundColor Red   -NoNewline; Write-Host "  (host.json not found in $SrcDir -- run ./swap-backend.ps1 storage|dts)" }
         default   { Write-Host "current backend: $current" }
     }
 }
@@ -119,6 +119,6 @@ switch ($Backend) {
         Write-Host "         (see local.settings.dts.json.template)" -ForegroundColor DarkGray
         Write-Host "      3. Azurite still needs to be running -- AzureWebJobsStorage is required by the Functions runtime regardless of Durable backend" -ForegroundColor DarkGray
         Write-Host "      4. open the dashboard at http://localhost:8082" -ForegroundColor DarkGray
-        Write-Host "      to swap back: .\scripts\swap-backend.ps1 storage" -ForegroundColor DarkGray
+        Write-Host "      to swap back: ./scripts/swap-backend.ps1 storage" -ForegroundColor DarkGray
     }
 }
