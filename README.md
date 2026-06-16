@@ -1,5 +1,9 @@
 # azure-functions-agents (Experimental)
 
+**Archived. See https://github.com/Azure/azure-functions-agents-runtime**
+
+---
+
 > **⚠️ This is an experimental package.** The APIs described here are under active development and subject to change.
 
 A markdown-first programming model for building AI agents on Azure Functions with the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
